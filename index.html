@@ -98,6 +98,29 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 #sheet .btns .print { flex: 1; min-height: 64px; font-size: 24px; }
 #sheet .btns .ghost { min-height: 64px; }
 
+/* Stock take */
+#takeMain { flex: 1; gap: 14px; min-height: 0; }
+.takeleft { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.takeright { width: 34%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.modes button { font-size: 18px; padding: 14px 8px; }
+.takecard { flex: 1; background: var(--card); border-radius: var(--r); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.takecard .scanwait { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+.takecard h2 { margin: 0; font-size: 26px; font-weight: 900; }
+.takecard .meta { color: var(--muted); font-weight: 700; font-size: 16px; }
+.counter { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 4px 0; }
+.counter button { width: 84px; height: 84px; font-size: 44px; font-weight: 900; background: #eef2f6; }
+.counter .num { width: auto; height: auto; min-width: 160px; font-size: inherit; text-align: center; background: #e3f6f7; border: 3px solid var(--teal); border-radius: var(--r); padding: 8px 16px; }
+.counter .num b { display: block; font-size: 52px; font-weight: 900; line-height: 1.1; }
+.counter .num small { font-size: 13px; font-weight: 700; color: var(--muted); }
+.change { text-align: center; font-weight: 700; font-size: 18px; }
+.change.up { color: #2f8a3a; } .change.down { color: #b3263a; }
+.takebtns { display: flex; gap: 10px; margin-top: auto; }
+.takebtns .print { flex: 1; min-height: 70px; font-size: 26px; }
+.session { flex: 1; overflow-y: auto; background: var(--card); border-radius: var(--r); padding: 6px 0; }
+.session h4 { margin: 6px 14px; font-size: 14px; color: var(--muted); }
+.session .it { padding: 8px 14px; border-top: 1px solid var(--line); font-weight: 700; font-size: 15px; }
+.session .it small { display: block; color: var(--muted); font-weight: 500; }
+
 /* Typing pop-up */
 #typer { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: flex-end; justify-content: center; z-index: 8; }
 #typer.on { display: flex; }
@@ -190,8 +213,8 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 
 <section id="home" class="screen on">
   <button class="big log"    id="goLog">Log<small>Every order label printed, with warranty dates</small></button>
-  <button class="big stockx" id="goStock">Stock<small>Print labels for stock items, add new items</small></button>
-  <button class="big stockl" data-go="stock">Stock Label<small>Name, location and stock code barcode</small></button>
+  <button class="big stockx" id="goStock">Stock<small>Stock take, add or remove stock by scanning</small></button>
+  <button class="big stockl" id="goStockLabel">Stock Label<small>Shelf labels for your stock items</small></button>
   <button class="big order"  data-go="order">Order Label<small>Order number, card reader and tablet</small></button>
 </section>
 
@@ -248,12 +271,25 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
     <input class="inp" id="stPass" type="password" autocomplete="current-password" placeholder="Password">
     <button class="print" id="stSignInBtn" style="min-height:66px">Sign in</button>
     <button class="linkbtn" id="stForgot">Forgot your password, or normally use Google? Set a password</button>
+    <button class="linkbtn" id="stCustom2" style="display:none">Or print a custom label without signing in</button>
+  </div>
+  <div id="takeMain" style="display:none">
+    <div class="takeleft">
+      <div class="seg modes" id="takeModes"><button data-m="take" class="on">Stock take</button><button data-m="add">Add stock</button><button data-m="remove">Remove stock</button></div>
+      <div class="takecard" id="takeCard"></div>
+    </div>
+    <div class="takeright">
+      <div class="session" id="takeSession"></div>
+      <button class="chip" id="takeFind">&#128269; Find an item</button>
+      <button class="chip primary" id="takeNew">+ New item</button>
+    </div>
   </div>
   <div id="stockMain" style="display:none;flex:1;flex-direction:column;gap:12px;min-height:0">
     <div class="logbar">
       <button class="search" id="stSearchBtn"><span>&#128269;</span><span id="stSearchText"></span></button>
       <button class="chip" id="stClear" style="display:none">Clear</button>
       <button class="chip" id="stRefresh" title="Refresh">&#8635;</button>
+      <button class="chip" id="stCustom">Custom label</button>
       <button class="chip primary" id="stNew">+ New item</button>
     </div>
     <div class="who"><span id="stCount"></span><span id="stWho"></span><button class="linkbtn" id="stSignOut">Sign out</button></div>

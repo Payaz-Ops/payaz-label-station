@@ -72,8 +72,8 @@ icon and choose **Pin**.
 | Button | What it does |
 |---|---|
 | **Log** | Every Order Label printed: order number, date, card reader, tablet and **warranty expiry** (12 months after printing; expired dates show in red). Scan or type a serial to find it, tap a row to delete it, and **Export CSV** to email it or save it to Drive. |
-| **Stock** | Linked to the **Payaz Stock** app (payaz-stock.web.app). Sign in once with your Payaz Stock staff email and password. Search or **scan** an item to print its label (name, location and the barcode the stock app scans; the SKU if it has no barcode). **+ New item** adds a product straight into Payaz Stock (with a "stock in" history entry in your name) and prints its label. Scanning a code that isn't in stock offers to add it. |
-| **Stock Label** | Type the item **name** and **location**, then scan or type the **stock code**. Prints the name at the top, the location, then the code and its barcode. |
+| **Stock** | **Stock take** linked to the Payaz Stock app (sign in once with your Payaz Stock staff email and password). Choose **Stock take**, **Add stock** or **Remove stock**, then scan: each scan of an item (or its shelf label) counts 1, or use + / − or type the number. **Save**, or just scan the next item, and the new quantity goes into Payaz Stock with the same history entry the stock app writes ("Stock Take Audit (Recorded: 12, Counted: 9) (Old: 12 → New: 9)"). Unknown barcodes can be added as new items. |
+| **Stock Label** | **Shelf labels** for Payaz Stock items: search or scan, tap an item and print. The barcode on the label is the item's own code in Payaz Stock (its barcode, or its SKU if it has none), so scanning the shelf label in a stock take finds the item. **+ New item** adds a product; **Custom label** prints a one-off label you type yourself (no sign-in needed). |
 | **Order Label** | Type the order number (tap **PZ** for numbers like 48374PZ) and scan the card reader and/or tablet. One box filled prints that on its own; two or three print one combined label. Each one is added to the Log. |
 
 The log is saved on the tablet. In the Android app it's also copied to

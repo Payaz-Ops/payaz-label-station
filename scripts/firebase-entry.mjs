@@ -5,5 +5,5 @@ export {
   signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
 } from "firebase/auth";
 export {
-  initializeFirestore, collection, getDocs, doc, getDoc, writeBatch,
+  initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
 } from "firebase/firestore";

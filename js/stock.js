@@ -5,7 +5,7 @@
 import {
   initializeApp, initializeAuth, indexedDBLocalPersistence, browserLocalPersistence,
   signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
-  initializeFirestore, collection, getDocs, doc, getDoc, writeBatch,
+  initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
 } from "./firebase.js";
 
 // Public web settings of the Payaz Stock app (the same values its website uses).
@@ -142,6 +142,55 @@ export const stock = {
     }
     return "SKU-" + Date.now().toString().slice(-6);
   },
+
+  /**
+   * Change an item's quantity, exactly like the stock app's adjustStock: one
+   * transaction that reads the latest quantity, updates it and writes the
+   * movement, with the reason ending "(Old: x → New: y)".
+   *   newQuantity: set the count (stock take)   or   change: +n / -n (add / remove stock)
+   */
+  async adjustStock(itemId, { newQuantity, change, reason, source = "scan" }) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const itemRef = doc(db, "items", itemId);
+    const now = new Date().toISOString();
+    const movId = rid("mov");
+    let result;
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(itemRef);
+      if (!snap.exists()) throw new Error("That item isn't in the stock app any more.");
+      const item = { id: snap.id, ...snap.data() };
+      const oldQty = Number(item.quantity_on_hand) || 0;
+      const newQty = newQuantity !== undefined ? Math.max(0, Math.round(newQuantity)) : Math.max(0, oldQty + Math.round(change || 0));
+      const movement = {
+        id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+        serial_number: null,
+        direction: newQty > oldQty ? "in" : newQty < oldQty ? "out" : "adjustment",
+        quantity_delta: Math.abs(newQty - oldQty),
+        location_from: item.location, location_to: item.location,
+        user_id: this.user.uid, user_name: this.userName,
+        reason: `${reason} (Old: ${oldQty} \u2192 New: ${newQty})`,
+        source,
+      };
+      tx.update(itemRef, { quantity_on_hand: newQty, updated_at: now });
+      tx.set(doc(db, "movements", movId), movement);
+      result = { item: { ...item, quantity_on_hand: newQty, updated_at: now }, oldQty, newQty, movement };
+    });
+    const i = this.items.findIndex((x) => x.id === itemId);
+    if (i >= 0) this.items[i] = result.item;
+    return result;
+  },
+
+  /** Save a stock take count (same reason text as the stock app's Stock Take). */
+  saveCount(item, counted) {
+    return this.adjustStock(item.id, {
+      newQuantity: counted,
+      reason: `Stock Take Audit (Recorded: ${Number(item.quantity_on_hand) || 0}, Counted: ${counted})`,
+    });
+  },
+  /** Add or remove stock by scanning (same reason text as the stock app's scan modes). */
+  addStock(item, n) { return this.adjustStock(item.id, { change: n, reason: `Add Stock Scan Mode (+${n})` }); },
+  removeStock(item, n) { return this.adjustStock(item.id, { change: -n, reason: `Remove Stock Scan Mode (-${n})` }); },
 
   /** Add an item to the stock app, plus its "created" movement (same as the stock app's own Add Item). */
   async addItem(input) {

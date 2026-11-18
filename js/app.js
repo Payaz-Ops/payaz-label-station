@@ -187,6 +187,10 @@ function keyInput(e, { onScan, onType, onDelete }) {
 document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return; // typing in a real text box
   if ($("#typer").classList.contains("on")) return;
+  if ($("#stock").classList.contains("on") && $("#takeMain").style.display !== "none") {
+    keyInput(e, { onScan: (c) => takeScan(c.trim()), onType: (c) => { if (c.trim().length >= 4) takeScan(c.trim()); }, onDelete: () => {} });
+    return;
+  }
   if ($("#stock").classList.contains("on") && $("#stockMain").style.display !== "none" && !$("#sheet").classList.contains("on")) {
     keyInput(e, { onScan: (c) => stockScan(c.trim()), onType: (c) => setStockSearch(stockSearch + c), onDelete: () => setStockSearch(stockSearch.slice(0, -1)) });
     return;
@@ -377,22 +381,31 @@ document.querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => saveSet
 $("#reloadBtn").onclick = () => location.reload();
 
 document.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => openMode(b.dataset.go)));
-$("#goStock").onclick = openStock;
+$("#goStock").onclick = () => { pickForTake = false; openStock("take"); };
+$("#goStockLabel").onclick = () => { pickForTake = false; openStock("labels"); };
 $("#goLog").onclick = openLog;
 
 /* ---------- stock (linked to the Payaz Stock app) ---------- */
 let stockSearch = "", stockReady = false, sheetItem = null, sheetCopies = 1;
+let stockView = "take", pickForTake = false; // "take" = Stock button, "labels" = Stock Label button
 S.watch(() => { stockReady = true; if ($("#stock").classList.contains("on")) openStock(); });
 
-async function openStock() {
-  $("#hdrTitle").textContent = "Stock"; show("stock"); poke();
+async function openStock(view = stockView) {
+  stockView = view;
+  $("#hdrTitle").textContent = pickForTake ? "Choose an item to count" : view === "take" ? "Stock" : "Stock Label";
+  show("stock"); poke();
   const signedIn = S.user && S.isStaff;
   $("#stockSignin").style.display = signedIn ? "none" : "flex";
-  $("#stockMain").style.display = signedIn ? "flex" : "none";
+  const showTake = signedIn && view === "take" && !pickForTake;
+  $("#takeMain").style.display = showTake ? "flex" : "none";
+  $("#stockMain").style.display = signedIn && !showTake ? "flex" : "none";
+  $("#stCustom").style.display = pickForTake ? "none" : "";
+  $("#stCustom2").style.display = view === "labels" ? "" : "none";
   if (!signedIn) return;
   $("#stWho").textContent = `Signed in as ${S.userName}`;
   if (!S.items.length) await refreshStock();
   else drawStock();
+  if (showTake) drawTake();
 }
 async function refreshStock() {
   overlay("Loading stock…", "", false, true);
@@ -415,7 +428,11 @@ function drawStock() {
     `<td>${esc(S.labelCode(i))}</td><td>${esc(i.location || "-")}</td><td>${i.quantity_on_hand ?? "-"}</td></tr>`).join("");
   $("#stEmpty").textContent = rows.length ? (rows.length > shown.length ? `Showing the first ${shown.length}. Search to narrow it down.` : "")
     : S.items.length ? "Nothing matches that search." : "No items in the stock app yet. Tap + New item.";
-  $("#stBody").querySelectorAll("tr").forEach((tr) => (tr.onclick = () => openSheet(S.items.find((i) => i.id === tr.dataset.id))));
+  $("#stBody").querySelectorAll("tr").forEach((tr) => (tr.onclick = () => {
+    const item = S.items.find((i) => i.id === tr.dataset.id);
+    if (pickForTake) { pickForTake = false; stockSearch = ""; openStock("take"); takeStart(item); }
+    else openSheet(item);
+  }));
 }
 // A scan on the stock screen: open that item, or offer to add it.
 function stockScan(code) {
@@ -475,6 +492,93 @@ $("#stRefresh").onclick = refreshStock;
 $("#stClear").onclick = () => setStockSearch("");
 $("#stSearchBtn").onclick = () => { searchTarget = "stock"; drawTyper(); $("#typer").classList.add("on"); };
 $("#stNew").onclick = () => openNewItem({});
+$("#stCustom").onclick = () => openMode("stock");
+$("#stCustom2").onclick = () => openMode("stock");
+
+/* ---------- stock take (Stock button) ---------- */
+// Same as the stock app's Stock Take / Add Stock / Remove Stock scan modes:
+// each scan of the item counts 1; the result is saved with the same history text.
+let takeMode = "take", takeItem = null, takeCount = 0, takeBusy = false;
+const takeSession = [];
+const MODE_TEXT = {
+  take: { name: "Stock take", counter: "COUNTED", hint: "Scan every unit of an item: each scan counts 1. Scanning the next item saves this one." },
+  add: { name: "Add stock", counter: "ADDING", hint: "Scan each unit you're putting into stock." },
+  remove: { name: "Remove stock", counter: "REMOVING", hint: "Scan each unit you're taking out of stock." },
+};
+const recorded = (i) => Number(i.quantity_on_hand) || 0;
+function takeResult() {
+  const old = recorded(takeItem);
+  return takeMode === "take" ? takeCount : takeMode === "add" ? old + takeCount : Math.max(0, old - takeCount);
+}
+function drawTake() {
+  document.querySelectorAll("#takeModes button").forEach((b) => b.classList.toggle("on", b.dataset.m === takeMode));
+  const M = MODE_TEXT[takeMode], card = $("#takeCard");
+  if (!takeItem) {
+    card.innerHTML = `<div class="scanwait"><div class="beam"></div><h2>Scan an item or its shelf label</h2>
+      <p style="margin:0;color:var(--muted);font-size:17px">${M.hint}</p>
+      <div class="btns" style="display:flex;gap:10px"><button class="ghost cam" id="takeCam">&#128247; Use camera</button></div></div>`;
+    $("#takeCam").onclick = () => scanWithCamera((c) => takeScan(c.trim()));
+  } else {
+    const old = recorded(takeItem), res = takeResult(), diff = res - old;
+    card.innerHTML = `<h2>${esc(takeItem.name || "(no name)")}</h2>
+      <div class="meta">SKU ${esc(takeItem.SKU || "-")} · ${esc(takeItem.location || "no location")} · In stock now: <b>${old}</b></div>
+      <div class="counter"><button id="tkMinus">&minus;</button><button class="num" id="tkNum"><small>${M.counter}</small><b>${takeCount}</b></button><button id="tkPlus">+</button></div>
+      <div class="change ${diff > 0 ? "up" : diff < 0 ? "down" : ""}">${diff === 0 ? `Stays at ${old}` : `${old} \u2192 ${res} (${diff > 0 ? "+" : ""}${diff})`}</div>
+      <div class="takebtns"><button class="ghost" id="tkCancel" style="min-height:70px">Cancel</button><button class="print" id="tkSave">SAVE</button></div>`;
+    $("#tkMinus").onclick = () => { takeCount = Math.max(0, takeCount - 1); drawTake(); poke(); };
+    $("#tkPlus").onclick = () => { takeCount++; drawTake(); poke(); };
+    $("#tkNum").onclick = () => { searchTarget = "count"; drawTyper(); $("#typer").classList.add("on"); };
+    $("#tkCancel").onclick = () => { takeItem = null; drawTake(); };
+    $("#tkSave").onclick = () => takeSave();
+  }
+  $("#takeSession").innerHTML = `<h4>THIS SESSION</h4>` + (takeSession.length ? takeSession.map((x) =>
+    `<div class="it">${esc(x.name)}<small>${x.what} · ${x.time}</small></div>`).join("") : `<div class="it"><small>Nothing saved yet.</small></div>`);
+}
+function takeStart(item) { takeItem = item; takeCount = 1; drawTake(); poke(); }
+async function takeScan(code) {
+  if (!code || takeBusy) return;
+  const item = S.findByCode(code);
+  if (!item) {
+    overlay("Not in the stock app", `Nothing has the code ${code}.`, false, false, { label: "Add it as a new item", run: () => openNewItem({ barcode: code }) });
+    return;
+  }
+  if (takeItem && takeItem.id === item.id) { takeCount++; drawTake(); poke(); return; }
+  if (takeItem && !(await takeSave(true))) return;
+  takeStart(item);
+}
+const hhmm = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+/** Save the item being counted. Returns false if it couldn't be saved. */
+async function takeSave(auto = false) {
+  if (!takeItem) return true;
+  const item = takeItem, n = takeCount, mode = takeMode;
+  const noChange = mode === "take" ? n === recorded(item) : n === 0;
+  if (noChange) {
+    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: no change (${recorded(item)})`, time: hhmm() });
+    takeItem = null; drawTake(); return true;
+  }
+  takeBusy = true;
+  overlay("Saving…", item.name, false, true);
+  try {
+    const r = mode === "take" ? await S.saveCount(item, n) : mode === "add" ? await S.addStock(item, n) : await S.removeStock(item, n);
+    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: ${r.oldQty} \u2192 ${r.newQty}`, time: hhmm() });
+    takeItem = null; drawTake();
+    overlay("Saved \u2713", `${item.name}: ${r.oldQty} \u2192 ${r.newQty}`, false, true);
+    setTimeout(hideOverlay, auto ? 700 : 1000);
+    return true;
+  } catch (e) {
+    overlay("Couldn't save", `${item.name}: ${friendlyError(e)}`, true);
+    return false;
+  } finally { takeBusy = false; }
+}
+document.querySelectorAll("#takeModes button").forEach((b) => (b.onclick = async () => {
+  if (b.dataset.m === takeMode) return;
+  if (takeItem && !(await takeSave(true))) return;
+  takeMode = b.dataset.m; drawTake();
+}));
+$("#takeFind").onclick = () => { pickForTake = true; stockSearch = ""; openStock("take"); };
+$("#takeNew").onclick = () => openNewItem({});
+// Leaving the stock screens saves any count in progress first.
+async function leaveToHome() { if (takeItem && !(await takeSave(true))) return; pickForTake = false; home(); }
 
 // New item form
 let niTracking = "quantity", niPrintAfter = true;
@@ -530,6 +634,7 @@ $("#niSave").onclick = async () => {
   let item;
   try { item = await S.addItem(input); }
   catch (e) { overlay("Couldn't save", friendlyError(e), true); return; }
+  takeSession.unshift({ name: item.name, what: `New item added (${item.quantity_on_hand} in stock)`, time: hhmm() });
   if (niPrintAfter) {
     if (await doPrint("stock", stockLabelValues(item), 1)) overlay("Saved and printed \u2713", `${item.name} is in the stock app.`, false, true);
     else return; // print error is showing; the item is saved
@@ -568,8 +673,11 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log";
-const typerValue = () => (searchTarget === "stock" ? stockSearch : search);
-const typerSet = (v) => (searchTarget === "stock" ? setStockSearch(v) : setSearch(v));
+const typerValue = () => (searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerSet = (v) => {
+  if (searchTarget === "count") { takeCount = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
+  return searchTarget === "stock" ? setStockSearch(v) : setSearch(v);
+};
 $("#searchBtn").onclick = () => { searchTarget = "log"; drawTyper(); $("#typer").classList.add("on"); };
 function drawTyper() {
   $("#typerShown").textContent = typerValue() || " ";
@@ -587,12 +695,23 @@ $("#typerKbd").onclick = (e) => {
   drawTyper();
 };
 $("#typer").onclick = (e) => { if (e.target.id === "typer") $("#typer").classList.remove("on"); };
-$("#backBtn").onclick = () => ($("#newitem").classList.contains("on") ? openStock() : home());
+$("#backBtn").onclick = () => {
+  if ($("#newitem").classList.contains("on")) return openStock();
+  if ($("#stock").classList.contains("on") && pickForTake) { pickForTake = false; return openStock("take"); }
+  if ($("#stock").classList.contains("on")) return leaveToHome();
+  home();
+};
 $("#setBtn").onclick = openSettings;
 
 /* ---------- tablet niceties ---------- */
 // Back to the start screen after 3 minutes of no use
-function poke() { clearTimeout(idleTimer); idleTimer = setTimeout(() => { hideOverlay(); closeCamera(); home(); }, 180000); }
+function poke() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(async () => {
+    if (takeItem && !(await takeSave(true))) return; // keep an unsaved count on screen if saving failed
+    hideOverlay(); closeCamera(); closeSheet(); pickForTake = false; home();
+  }, 180000);
+}
 document.addEventListener("pointerdown", poke);
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 // Keep the screen on while the app is open
