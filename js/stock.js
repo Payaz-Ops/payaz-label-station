@@ -123,13 +123,15 @@ export const stock = {
       || this.items.find((i) => i.id && i.id.toLowerCase() === c) || null;
   },
 
-  /** Problems with a new item before saving (duplicate SKU/barcode, missing name). */
-  check({ name, SKU, barcode }) {
+  /** Problems with an item before saving (duplicate SKU/barcode, missing name).
+   *  excludeId: the item being edited (it may keep its own codes). */
+  check({ name, SKU, barcode }, excludeId = null) {
     if (!name || !name.trim()) return "Give the item a name.";
+    const others = this.items.filter((i) => i.id !== excludeId);
     const sku = (SKU || "").trim().toLowerCase(), bc = (barcode || "").trim().toLowerCase();
-    const dupSku = sku && this.items.find((i) => (i.SKU || "").toLowerCase() === sku);
+    const dupSku = sku && others.find((i) => (i.SKU || "").toLowerCase() === sku || (i.barcode || "").toLowerCase() === sku);
     if (dupSku) return `SKU ${SKU} is already used by "${dupSku.name}".`;
-    const dupBc = bc && this.items.find((i) => (i.barcode || "").toLowerCase() === bc || (i.SKU || "").toLowerCase() === bc);
+    const dupBc = bc && others.find((i) => (i.barcode || "").toLowerCase() === bc || (i.SKU || "").toLowerCase() === bc);
     if (dupBc) return `Barcode ${barcode} is already on "${dupBc.name}".`;
     return null;
   },
@@ -192,6 +194,34 @@ export const stock = {
   addStock(item, n) { return this.adjustStock(item.id, { change: n, reason: `Add Stock Scan Mode (+${n})` }); },
   removeStock(item, n) { return this.adjustStock(item.id, { change: -n, reason: `Remove Stock Scan Mode (-${n})` }); },
 
+  /** Save changes to an item's details (same as editing it in the stock app). */
+  async updateItem(itemId, input) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const problem = this.check(input, itemId);
+    if (problem) throw new Error(problem);
+    const current = this.items.find((i) => i.id === itemId);
+    const changes = {
+      name: input.name.trim(),
+      SKU: (input.SKU || "").trim() || (current && current.SKU) || this.suggestSku(),
+      barcode: (input.barcode || "").trim(),
+      category: (input.category || "").trim() || "General",
+      location: (input.location || "").trim() || "Bin A-1",
+      notes: (input.notes || "").trim(),
+      updated_at: new Date().toISOString(),
+    };
+    if (input.image_url !== undefined) changes.image_url = input.image_url || "";
+    const batch = writeBatch(db);
+    batch.update(doc(db, "items", itemId), changes);
+    await batch.commit();
+    const updated = { ...(current || { id: itemId }), ...changes };
+    const i = this.items.findIndex((x) => x.id === itemId);
+    if (i >= 0) this.items[i] = updated;
+    if (!this.locations.includes(updated.location)) this.locations = [...this.locations, updated.location].sort();
+    if (!this.categories.includes(updated.category)) this.categories = [...this.categories, updated.category].sort();
+    return updated;
+  },
+
   /** Add an item to the stock app, plus its "created" movement (same as the stock app's own Add Item). */
   async addItem(input) {
     init();
@@ -213,7 +243,7 @@ export const stock = {
       supplier: "",
       location: (input.location || "").trim() || "Bin A-1",
       notes: (input.notes || "").trim(),
-      image_url: "",
+      image_url: input.image_url || "",
       is_discontinued: false,
       created_at: now,
       updated_at: now,

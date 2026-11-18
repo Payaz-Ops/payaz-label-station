@@ -450,6 +450,8 @@ function openSheet(item) {
   if (!item) return;
   sheetItem = item; sheetCopies = 1;
   $("#shName").textContent = item.name || "(no name)";
+  $("#shPic").style.display = item.image_url ? "" : "none";
+  $("#shPic").style.backgroundImage = item.image_url ? `url("${item.image_url}")` : "";
   $("#shMeta").innerHTML = `SKU <b>${esc(item.SKU || "-")}</b>${item.barcode ? ` · Barcode <b>${esc(item.barcode)}</b>` : ""}<br>` +
     `Location <b>${esc(item.location || "-")}</b> · In stock <b>${item.quantity_on_hand ?? "-"}</b>${item.category ? ` · ${esc(item.category)}` : ""}`;
   drawSheet(); $("#sheet").classList.add("on"); poke();
@@ -466,10 +468,7 @@ $("#shPlus").onclick = () => { sheetCopies = Math.min(50, sheetCopies + 1); draw
 $("#shPrint").onclick = async () => {
   if (await doPrint("stock", stockLabelValues(sheetItem), sheetCopies)) setTimeout(() => { hideOverlay(); closeSheet(); }, 1100);
 };
-$("#shEdit").onclick = () => {
-  const v = stockLabelValues(sheetItem); closeSheet();
-  openMode("stock"); Object.assign(vals, v); setActive("name");
-};
+$("#shEdit").onclick = () => { const item = sheetItem; closeSheet(); openEditItem(item); };
 
 // Sign in / out
 $("#stSignInBtn").onclick = async () => {
@@ -581,22 +580,31 @@ $("#takeNew").onclick = () => openNewItem({});
 async function leaveToHome() { if (takeItem && !(await takeSave(true))) return; pickForTake = false; home(); }
 
 // New item form
-let niTracking = "quantity", niPrintAfter = true;
+let niTracking = "quantity", niPrintAfter = true, niEditId = null, niPhoto = "";
 const NEW_OPT = "__new__";
 function fillSelect(sel, options, current) {
   sel.innerHTML = options.map((o) => `<option${o === current ? " selected" : ""}>${esc(o)}</option>`).join("") +
     `<option value="${NEW_OPT}">+ New…</option>`;
 }
-function openNewItem(prefill) {
-  $("#hdrTitle").textContent = "New stock item"; show("newitem"); poke();
-  $("#niName").value = prefill.name || "";
-  $("#niSku").value = S.suggestSku();
-  $("#niBarcode").value = prefill.barcode || "";
-  fillSelect($("#niCat"), S.categories.length ? S.categories : ["General"], S.categories.includes("General") ? "General" : S.categories[0]);
-  fillSelect($("#niLoc"), S.locations.length ? S.locations : ["Bin A-1"], S.locations[0]);
+function openNewItem(prefill) { openItemForm(null, prefill); }
+function openEditItem(item) { openItemForm(item, {}); }
+// One form for adding a new item and for editing an existing one.
+function openItemForm(item, prefill) {
+  niEditId = item ? item.id : null;
+  $("#hdrTitle").textContent = item ? "Edit stock item" : "New stock item"; show("newitem"); poke();
+  document.querySelectorAll("#newitem .newonly").forEach((el) => (el.style.display = item ? "none" : ""));
+  $("#niSave").textContent = item ? "SAVE CHANGES" : "SAVE TO STOCK";
+  $("#niName").value = item ? item.name || "" : prefill.name || "";
+  $("#niSku").value = item ? item.SKU || "" : S.suggestSku();
+  $("#niBarcode").value = item ? item.barcode || "" : prefill.barcode || "";
+  const cats = S.categories.length ? S.categories : ["General"], locs = S.locations.length ? S.locations : ["Bin A-1"];
+  const withCurrent = (list, v) => (v && !list.includes(v) ? [...list, v].sort() : list);
+  fillSelect($("#niCat"), withCurrent(cats, item && item.category), item ? item.category : cats.includes("General") ? "General" : cats[0]);
+  fillSelect($("#niLoc"), withCurrent(locs, item && item.location), item ? item.location : locs[0]);
+  niPhoto = item ? item.image_url || "" : "";
   $("#niCatNew").style.display = $("#niLocNew").style.display = "none";
   $("#niCatNew").value = $("#niLocNew").value = "";
-  $("#niQty").value = "0"; $("#niReorder").value = "5"; $("#niNotes").value = "";
+  $("#niQty").value = "0"; $("#niReorder").value = "5"; $("#niNotes").value = item ? item.notes || "" : "";
   niTracking = "quantity"; drawNewItem();
   setTimeout(() => $("#niName").focus(), 50);
 }
@@ -606,9 +614,14 @@ function newItemInput() {
     name: $("#niName").value, SKU: $("#niSku").value, barcode: $("#niBarcode").value,
     category: pick($("#niCat"), $("#niCatNew")), location: pick($("#niLoc"), $("#niLocNew")),
     tracking_type: niTracking, quantity_on_hand: $("#niQty").value, reorder_threshold: $("#niReorder").value, notes: $("#niNotes").value,
+    image_url: niPhoto,
   };
 }
 function drawNewItem() {
+  $("#niPhoto").style.backgroundImage = niPhoto ? `url("${niPhoto}")` : "";
+  $("#niPhoto").textContent = niPhoto ? "" : "No photo";
+  $("#niPhotoBtn").innerHTML = niPhoto ? "&#128247; Change photo" : "&#128247; Add photo";
+  $("#niPhotoDel").style.display = niPhoto ? "" : "none";
   document.querySelectorAll("#niTrack button").forEach((b) => b.classList.toggle("on", b.dataset.v === niTracking));
   $("#niPrintAfter button").classList.toggle("on", niPrintAfter);
   $("#niPrintAfter button").textContent = niPrintAfter ? "\u2713 Print label after saving" : "Don't print a label";
@@ -626,12 +639,61 @@ $("#niBarcode").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault()
 document.querySelectorAll("#niTrack button").forEach((b) => (b.onclick = (e) => { e.preventDefault(); niTracking = b.dataset.v; drawNewItem(); }));
 $("#niPrintAfter button").onclick = (e) => { e.preventDefault(); niPrintAfter = !niPrintAfter; drawNewItem(); };
 $("#niScan").onclick = (e) => { e.preventDefault(); scanWithCamera((code) => { $("#niBarcode").value = code.trim(); drawNewItem(); }); };
+// Photos: the same size and format the stock app uses (up to 600 x 600, JPEG 80%).
+function shrinkPhoto(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 600 / img.width, 600 / img.height);
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL("image/jpeg", 0.8));
+    };
+    img.onerror = () => reject(new Error("That picture couldn't be read."));
+    img.src = dataUrl;
+  });
+}
+async function usePhoto(dataUrl) {
+  try { niPhoto = await shrinkPhoto(dataUrl); drawNewItem(); }
+  catch (e) { overlay("Couldn't use that photo", e.message, true); }
+}
+$("#niPhotoBtn").onclick = async (e) => {
+  e.preventDefault(); poke();
+  if (NATIVE && window.Capacitor.Plugins.Camera) {
+    try {
+      const photo = await window.Capacitor.Plugins.Camera.getPhoto({
+        quality: 80, resultType: "dataUrl", source: "PROMPT", width: 1200, correctOrientation: true,
+        promptLabelHeader: "Product photo", promptLabelPhoto: "Choose from the gallery", promptLabelPicture: "Take a photo",
+      });
+      if (photo && photo.dataUrl) usePhoto(photo.dataUrl);
+    } catch (err) { if (!/cancel/i.test(err && err.message)) overlay("Camera not available", (err && err.message) || "", true); }
+    return;
+  }
+  $("#niPhotoFile").value = ""; $("#niPhotoFile").click();
+};
+$("#niPhotoFile").onchange = () => {
+  const f = $("#niPhotoFile").files[0]; if (!f) return;
+  const r = new FileReader(); r.onload = () => usePhoto(r.result); r.readAsDataURL(f);
+};
+$("#niPhotoDel").onclick = (e) => { e.preventDefault(); niPhoto = ""; drawNewItem(); };
+
 $("#niSave").onclick = async () => {
   const input = newItemInput();
-  const problem = S.check(input) || (!input.category ? "Type the new category name." : !input.location ? "Type the new location name." : null);
+  const problem = S.check(input, niEditId) || (!input.category ? "Type the new category name." : !input.location ? "Type the new location name." : null);
   if (problem) { overlay("Check the details", problem, true); return; }
-  overlay("Saving to Payaz Stock…", "", false, true);
+  overlay(niEditId ? "Saving changes to Payaz Stock…" : "Saving to Payaz Stock…", "", false, true);
   let item;
+  if (niEditId) {
+    try { item = await S.updateItem(niEditId, input); }
+    catch (e) { overlay("Couldn't save", friendlyError(e), true); return; }
+    if (niPrintAfter) {
+      if (await doPrint("stock", stockLabelValues(item), 1)) overlay("Saved and printed \u2713", `${item.name} is updated in the stock app.`, false, true);
+      else return;
+    } else overlay("Changes saved \u2713", `${item.name} is updated in the stock app.`, false, true);
+    setTimeout(() => { hideOverlay(); stockSearch = ""; openStock(); }, 1400);
+    return;
+  }
   try { item = await S.addItem(input); }
   catch (e) { overlay("Couldn't save", friendlyError(e), true); return; }
   takeSession.unshift({ name: item.name, what: `New item added (${item.quantity_on_hand} in stock)`, time: hhmm() });

@@ -80,6 +80,12 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 .form .inp { font-size: 18px; padding: 10px 12px; }
 .form .side { width: 34%; display: flex; flex-direction: column; gap: 10px; }
 .seg { display: flex; gap: 8px; }
+.photo { display: flex; gap: 14px; align-items: center; }
+.photo .ph { width: 120px; height: 120px; border-radius: var(--r); background: #eef2f6 center/cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--muted); font-weight: 700; font-size: 14px; flex: none; }
+.photobtns { display: flex; flex-direction: column; gap: 8px; }
+.photobtns .ghost { padding: 12px 18px; }
+#sheet .pic { width: 96px; height: 96px; border-radius: var(--r); background: #eef2f6 center/cover no-repeat; flex: none; }
+#sheet .head { display: flex; gap: 14px; align-items: center; }
 .seg button { flex: 1; background: #eef2f6; padding: 10px; font-weight: 700; border: 3px solid transparent; }
 .seg button.on { border-color: var(--teal); background: #e3f6f7; }
 .withbtn { display: flex; gap: 8px; }
@@ -308,10 +314,13 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
       <label>Barcode (optional)<div class="withbtn"><input class="inp" id="niBarcode" placeholder="Scan or type" maxlength="100"><button id="niScan">&#128247;</button></div></label>
       <label>Category<select class="inp" id="niCat"></select><input class="inp" id="niCatNew" placeholder="New category name" style="display:none" maxlength="100"></label>
       <label>Location<select class="inp" id="niLoc"></select><input class="inp" id="niLocNew" placeholder="New location name" style="display:none" maxlength="100"></label>
-      <label>Tracking<div class="seg" id="niTrack"><button data-v="quantity" class="on">Quantity</button><button data-v="serial">Serial numbers</button></div></label>
-      <label>Quantity in stock<input class="inp" id="niQty" type="number" min="0" inputmode="numeric" value="0"></label>
-      <label>Reorder when below<input class="inp" id="niReorder" type="number" min="0" inputmode="numeric" value="5"></label>
+      <label class="newonly">Tracking<div class="seg" id="niTrack"><button data-v="quantity" class="on">Quantity</button><button data-v="serial">Serial numbers</button></div></label>
+      <label class="newonly">Quantity in stock<input class="inp" id="niQty" type="number" min="0" inputmode="numeric" value="0"></label>
+      <label class="newonly">Reorder when below<input class="inp" id="niReorder" type="number" min="0" inputmode="numeric" value="5"></label>
       <label class="full">Notes (optional)<input class="inp" id="niNotes" maxlength="1000"></label>
+      <div class="full photo"><div class="ph" id="niPhoto">No photo</div>
+        <div class="photobtns"><button class="ghost cam" id="niPhotoBtn">&#128247; Add photo</button><button class="ghost" id="niPhotoDel" style="display:none">Remove photo</button></div>
+        <input type="file" id="niPhotoFile" accept="image/*" capture="environment" style="display:none"></div>
     </div>
     <div class="side">
       <div class="preview" id="niPreview"></div>
@@ -359,13 +368,12 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 
 <div id="sheet"><div class="box">
   <div class="info">
-    <h2 id="shName"></h2>
-    <div class="meta" id="shMeta"></div>
+    <div class="head"><div class="pic" id="shPic" style="display:none"></div><div><h2 id="shName"></h2><div class="meta" id="shMeta"></div></div></div>
     <div class="btns">
       <div class="copies"><button id="shMinus">&minus;</button><span><small>COPIES</small><b id="shCopies">1</b></span><button id="shPlus">+</button></div>
       <button class="print" id="shPrint">PRINT LABEL</button>
     </div>
-    <div class="btns"><button class="ghost" id="shEdit">Edit label before printing</button><button class="ghost" id="shClose">Close</button></div>
+    <div class="btns"><button class="ghost" id="shEdit">&#9998; Edit item &amp; label</button><button class="ghost" id="shClose">Close</button></div>
   </div>
   <div class="prev" id="shPrev"></div>
 </div></div>
