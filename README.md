@@ -72,7 +72,7 @@ icon and choose **Pin**.
 | Button | What it does |
 |---|---|
 | **Log** | Every Order Label printed: order number, date, card reader, tablet and **warranty expiry** (12 months after printing; expired dates show in red). Scan or type a serial to find it, tap a row to delete it, and **Export CSV** to email it or save it to Drive. |
-| **Stock** | Coming soon. |
+| **Stock** | Linked to the **Payaz Stock** app (payaz-stock.web.app). Sign in once with your Payaz Stock staff email and password. Search or **scan** an item to print its label (name, location and the barcode the stock app scans; the SKU if it has no barcode). **+ New item** adds a product straight into Payaz Stock (with a "stock in" history entry in your name) and prints its label. Scanning a code that isn't in stock offers to add it. |
 | **Stock Label** | Type the item **name** and **location**, then scan or type the **stock code**. Prints the name at the top, the location, then the code and its barcode. |
 | **Order Label** | Type the order number (tap **PZ** for numbers like 48374PZ) and scan the card reader and/or tablet. One box filled prints that on its own; two or three print one combined label. Each one is added to the Log. |
 
@@ -81,6 +81,16 @@ The log is saved on the tablet. In the Android app it's also copied to
 Files app. Uninstalling the app deletes the in-app log, so export it first.
 
 **⚙ Settings** has the label size, print darkness (1–9), flip upside down and the test print.
+
+## Payaz Stock link (for someone technical)
+
+`js/stock.js` uses the Payaz Stock app's Firebase project (`oceanic-cache-418312`, database
+`stock`) and its security rules: any signed-in user can read items, locations and categories;
+adding items needs an active `staff_accounts` profile. New items are written exactly like the
+stock app's own Add Item (`items/{itm_…}` plus a `movements/{mov_…}` "in" record).
+Sign-in is email and password only (Google sign-in doesn't work inside the Android app); staff
+who normally use Google can set a password with "Forgot your password".
+`js/firebase.js` is a bundle of the Firebase SDK: rebuild it with `npm run build:firebase`.
 
 ## If something goes wrong
 

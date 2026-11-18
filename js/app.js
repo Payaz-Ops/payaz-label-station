@@ -1,6 +1,10 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
 import { loadLog, addLogEntry, deleteLogEntry, logRow, exportCsv } from "./log.js";
+import { stock as realStock, friendlyError as realFriendly } from "./stock.js";
+// (automated tests can swap in a pretend stock app)
+const S = window.__STOCK_MOCK__ || realStock;
+const friendlyError = (window.__STOCK_MOCK__ && window.__STOCK_MOCK__.friendlyError) || realFriendly;
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -181,7 +185,12 @@ function keyInput(e, { onScan, onType, onDelete }) {
   }
 }
 document.addEventListener("keydown", (e) => {
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return; // typing in a real text box
   if ($("#typer").classList.contains("on")) return;
+  if ($("#stock").classList.contains("on") && $("#stockMain").style.display !== "none" && !$("#sheet").classList.contains("on")) {
+    keyInput(e, { onScan: (c) => stockScan(c.trim()), onType: (c) => setStockSearch(stockSearch + c), onDelete: () => setStockSearch(stockSearch.slice(0, -1)) });
+    return;
+  }
   if ($("#log").classList.contains("on")) {
     keyInput(e, { onScan: (c) => setSearch(c.trim()), onType: (c) => setSearch(search + c), onDelete: () => setSearch(search.slice(0, -1)) });
     return;
@@ -206,6 +215,9 @@ const hasCamera = NATIVE || ("BarcodeDetector" in window && navigator.mediaDevic
 if (!hasCamera) $("#camBtn").style.display = "none";
 
 // In the Android app: Google's barcode scanner (ML Kit) opens full screen.
+let camCallback = acceptScan;
+/** Scan one barcode with the camera and pass it to onCode. */
+function scanWithCamera(onCode) { camCallback = onCode; return startCamera(); }
 async function nativeCameraScan() {
   const scanner = window.Capacitor.Plugins.BarcodeScanner;
   try {
@@ -217,13 +229,14 @@ async function nativeCameraScan() {
       hideOverlay();
     }
     const { barcodes } = await scanner.scan({ formats: ["CODE_128", "CODE_39", "CODE_93", "EAN_13", "UPC_A", "QR_CODE", "DATA_MATRIX"] });
-    if (barcodes && barcodes.length) acceptScan(barcodes[0].rawValue || barcodes[0].displayValue || "");
+    if (barcodes && barcodes.length) camCallback(barcodes[0].rawValue || barcodes[0].displayValue || "");
   } catch (e) {
     if (!/cancel/i.test(e && e.message)) overlay("Camera not available", (e && e.message) || "Use the barcode scanner instead.", true);
   }
 }
 
-$("#camBtn").onclick = async () => {
+$("#camBtn").onclick = () => scanWithCamera(acceptScan);
+async function startCamera() {
   if (NATIVE) return nativeCameraScan();
   try {
     const detector = new BarcodeDetector({ formats: ["code_128", "code_39", "ean_13", "qr_code", "data_matrix", "upc_a"] });
@@ -235,13 +248,13 @@ $("#camBtn").onclick = async () => {
       if (!camStream) return;
       try {
         const found = await detector.detect(video);
-        if (found.length) { closeCamera(); acceptScan(found[0].rawValue); return; }
+        if (found.length) { closeCamera(); camCallback(found[0].rawValue); return; }
       } catch (e) {}
       camTimer = setTimeout(tick, 150);
     };
     tick();
   } catch (e) { closeCamera(); overlay("Camera not available", "Allow camera access for this app, or use the barcode scanner.", true); }
-};
+}
 function closeCamera() {
   clearTimeout(camTimer);
   if (camStream) camStream.getTracks().forEach((t) => t.stop());
@@ -364,8 +377,165 @@ document.querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => saveSet
 $("#reloadBtn").onclick = () => location.reload();
 
 document.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => openMode(b.dataset.go)));
-$("#goStock").onclick = () => overlay("Coming soon", "Stock control is on its way.");
+$("#goStock").onclick = openStock;
 $("#goLog").onclick = openLog;
+
+/* ---------- stock (linked to the Payaz Stock app) ---------- */
+let stockSearch = "", stockReady = false, sheetItem = null, sheetCopies = 1;
+S.watch(() => { stockReady = true; if ($("#stock").classList.contains("on")) openStock(); });
+
+async function openStock() {
+  $("#hdrTitle").textContent = "Stock"; show("stock"); poke();
+  const signedIn = S.user && S.isStaff;
+  $("#stockSignin").style.display = signedIn ? "none" : "flex";
+  $("#stockMain").style.display = signedIn ? "flex" : "none";
+  if (!signedIn) return;
+  $("#stWho").textContent = `Signed in as ${S.userName}`;
+  if (!S.items.length) await refreshStock();
+  else drawStock();
+}
+async function refreshStock() {
+  overlay("Loading stock…", "", false, true);
+  try { await S.refresh(); hideOverlay(); }
+  catch (e) { overlay("Couldn't load stock", friendlyError(e), true); }
+  drawStock();
+}
+function setStockSearch(v) { stockSearch = v.slice(0, 40); drawStock(); poke(); }
+function stockMatches() {
+  const q = stockSearch.trim().toLowerCase();
+  if (!q) return S.items;
+  return S.items.filter((i) => [i.name, i.SKU, i.barcode, i.location, i.category].some((v) => (v || "").toLowerCase().includes(q)));
+}
+function drawStock() {
+  const rows = stockMatches(), shown = rows.slice(0, 300);
+  $("#stSearchText").innerHTML = stockSearch ? `<b>${esc(stockSearch)}</b>` : '<span class="ph">Scan an item, or tap to search name, SKU or location</span>';
+  $("#stClear").style.display = stockSearch ? "" : "none";
+  $("#stCount").textContent = stockSearch ? `${rows.length} of ${S.items.length} items` : `${S.items.length} items`;
+  $("#stBody").innerHTML = shown.map((i) => `<tr class="row stockrow" data-id="${esc(i.id)}"><td>${esc(i.name || "-")}<small>${esc(i.category || "")}${i.is_discontinued ? " · discontinued" : ""}</small></td>` +
+    `<td>${esc(S.labelCode(i))}</td><td>${esc(i.location || "-")}</td><td>${i.quantity_on_hand ?? "-"}</td></tr>`).join("");
+  $("#stEmpty").textContent = rows.length ? (rows.length > shown.length ? `Showing the first ${shown.length}. Search to narrow it down.` : "")
+    : S.items.length ? "Nothing matches that search." : "No items in the stock app yet. Tap + New item.";
+  $("#stBody").querySelectorAll("tr").forEach((tr) => (tr.onclick = () => openSheet(S.items.find((i) => i.id === tr.dataset.id))));
+}
+// A scan on the stock screen: open that item, or offer to add it.
+function stockScan(code) {
+  if (!code) return;
+  const item = S.findByCode(code);
+  if (item) { stockSearch = ""; drawStock(); openSheet(item); return; }
+  setStockSearch(code);
+  if (!stockMatches().length)
+    overlay("Not in the stock app", `Nothing has the code ${code}.`, false, false, { label: "Add it as a new item", run: () => openNewItem({ barcode: code }) });
+}
+const stockLabelValues = (i) => ({ name: i.name || "", location: i.location || "", code: S.labelCode(i) });
+
+// Item pop-up: print its label
+function openSheet(item) {
+  if (!item) return;
+  sheetItem = item; sheetCopies = 1;
+  $("#shName").textContent = item.name || "(no name)";
+  $("#shMeta").innerHTML = `SKU <b>${esc(item.SKU || "-")}</b>${item.barcode ? ` · Barcode <b>${esc(item.barcode)}</b>` : ""}<br>` +
+    `Location <b>${esc(item.location || "-")}</b> · In stock <b>${item.quantity_on_hand ?? "-"}</b>${item.category ? ` · ${esc(item.category)}` : ""}`;
+  drawSheet(); $("#sheet").classList.add("on"); poke();
+}
+function drawSheet() {
+  $("#shCopies").textContent = sheetCopies;
+  $("#shPrev").replaceChildren(makeLabel("stock", stockLabelValues(sheetItem)).canvas);
+}
+const closeSheet = () => $("#sheet").classList.remove("on");
+$("#shClose").onclick = closeSheet;
+$("#sheet").onclick = (e) => { if (e.target.id === "sheet") closeSheet(); };
+$("#shMinus").onclick = () => { sheetCopies = Math.max(1, sheetCopies - 1); drawSheet(); };
+$("#shPlus").onclick = () => { sheetCopies = Math.min(50, sheetCopies + 1); drawSheet(); };
+$("#shPrint").onclick = async () => {
+  if (await doPrint("stock", stockLabelValues(sheetItem), sheetCopies)) setTimeout(() => { hideOverlay(); closeSheet(); }, 1100);
+};
+$("#shEdit").onclick = () => {
+  const v = stockLabelValues(sheetItem); closeSheet();
+  openMode("stock"); Object.assign(vals, v); setActive("name");
+};
+
+// Sign in / out
+$("#stSignInBtn").onclick = async () => {
+  const email = $("#stEmail").value, pass = $("#stPass").value;
+  if (!email || !pass) { overlay("Enter your email and password", "", true); return; }
+  overlay("Signing in…", "", false, true);
+  try { await S.signIn(email, pass); $("#stPass").value = ""; hideOverlay(); openStock(); }
+  catch (e) { overlay("Couldn't sign in", friendlyError(e), true); }
+};
+$("#stPass").onkeydown = (e) => { if (e.key === "Enter") $("#stSignInBtn").click(); };
+$("#stForgot").onclick = async () => {
+  const email = $("#stEmail").value.trim();
+  if (!email) { overlay("Type your email first", "Then tap this again and we'll email you a link to set a password.", true); return; }
+  try { await S.resetPassword(email); overlay("Check your email", `If ${email} has a Payaz Stock login, a link to set a password is on its way.`); }
+  catch (e) { overlay("Couldn't send the email", friendlyError(e), true); }
+};
+$("#stSignOut").onclick = () => overlay("Sign out of Payaz Stock?", "You'll need your email and password to sign in again.", false, false,
+  { label: "Sign out", run: async () => { await S.signOut(); openStock(); } });
+$("#stRefresh").onclick = refreshStock;
+$("#stClear").onclick = () => setStockSearch("");
+$("#stSearchBtn").onclick = () => { searchTarget = "stock"; drawTyper(); $("#typer").classList.add("on"); };
+$("#stNew").onclick = () => openNewItem({});
+
+// New item form
+let niTracking = "quantity", niPrintAfter = true;
+const NEW_OPT = "__new__";
+function fillSelect(sel, options, current) {
+  sel.innerHTML = options.map((o) => `<option${o === current ? " selected" : ""}>${esc(o)}</option>`).join("") +
+    `<option value="${NEW_OPT}">+ New…</option>`;
+}
+function openNewItem(prefill) {
+  $("#hdrTitle").textContent = "New stock item"; show("newitem"); poke();
+  $("#niName").value = prefill.name || "";
+  $("#niSku").value = S.suggestSku();
+  $("#niBarcode").value = prefill.barcode || "";
+  fillSelect($("#niCat"), S.categories.length ? S.categories : ["General"], S.categories.includes("General") ? "General" : S.categories[0]);
+  fillSelect($("#niLoc"), S.locations.length ? S.locations : ["Bin A-1"], S.locations[0]);
+  $("#niCatNew").style.display = $("#niLocNew").style.display = "none";
+  $("#niCatNew").value = $("#niLocNew").value = "";
+  $("#niQty").value = "0"; $("#niReorder").value = "5"; $("#niNotes").value = "";
+  niTracking = "quantity"; drawNewItem();
+  setTimeout(() => $("#niName").focus(), 50);
+}
+const pick = (sel, other) => (sel.value === NEW_OPT ? other.value.trim() : sel.value);
+function newItemInput() {
+  return {
+    name: $("#niName").value, SKU: $("#niSku").value, barcode: $("#niBarcode").value,
+    category: pick($("#niCat"), $("#niCatNew")), location: pick($("#niLoc"), $("#niLocNew")),
+    tracking_type: niTracking, quantity_on_hand: $("#niQty").value, reorder_threshold: $("#niReorder").value, notes: $("#niNotes").value,
+  };
+}
+function drawNewItem() {
+  document.querySelectorAll("#niTrack button").forEach((b) => b.classList.toggle("on", b.dataset.v === niTracking));
+  $("#niPrintAfter button").classList.toggle("on", niPrintAfter);
+  $("#niPrintAfter button").textContent = niPrintAfter ? "\u2713 Print label after saving" : "Don't print a label";
+  const v = newItemInput();
+  $("#niPreview").replaceChildren(makeLabel("stock", { name: v.name, location: v.location, code: (v.barcode || v.SKU).trim() }).canvas);
+}
+["niName", "niSku", "niBarcode", "niCatNew", "niLocNew", "niQty", "niReorder"].forEach((id) => ($("#" + id).oninput = () => { poke(); drawNewItem(); }));
+$("#niBarcode").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("#niQty").focus(); } }; // scanner presses Enter
+[["niCat", "niCatNew"], ["niLoc", "niLocNew"]].forEach(([sel, other]) => ($("#" + sel).onchange = () => {
+  const isNew = $("#" + sel).value === NEW_OPT;
+  $("#" + other).style.display = isNew ? "" : "none";
+  if (isNew) $("#" + other).focus();
+  drawNewItem();
+}));
+document.querySelectorAll("#niTrack button").forEach((b) => (b.onclick = (e) => { e.preventDefault(); niTracking = b.dataset.v; drawNewItem(); }));
+$("#niPrintAfter button").onclick = (e) => { e.preventDefault(); niPrintAfter = !niPrintAfter; drawNewItem(); };
+$("#niScan").onclick = (e) => { e.preventDefault(); scanWithCamera((code) => { $("#niBarcode").value = code.trim(); drawNewItem(); }); };
+$("#niSave").onclick = async () => {
+  const input = newItemInput();
+  const problem = S.check(input) || (!input.category ? "Type the new category name." : !input.location ? "Type the new location name." : null);
+  if (problem) { overlay("Check the details", problem, true); return; }
+  overlay("Saving to Payaz Stock…", "", false, true);
+  let item;
+  try { item = await S.addItem(input); }
+  catch (e) { overlay("Couldn't save", friendlyError(e), true); return; }
+  if (niPrintAfter) {
+    if (await doPrint("stock", stockLabelValues(item), 1)) overlay("Saved and printed \u2713", `${item.name} is in the stock app.`, false, true);
+    else return; // print error is showing; the item is saved
+  } else overlay("Saved to Payaz Stock \u2713", `${item.name} (SKU ${item.SKU})`, false, true);
+  setTimeout(() => { hideOverlay(); stockSearch = ""; openStock(); }, 1400);
+};
 
 /* ---------- log screen ---------- */
 let search = "";
@@ -397,23 +567,27 @@ $("#exportBtn").onclick = async () => {
   catch (e) { if (!/cancel/i.test(e && e.message)) overlay("Couldn't export", (e && e.message) || String(e), true); }
 };
 // Search typing pop-up
-$("#searchBtn").onclick = () => { drawTyper(); $("#typer").classList.add("on"); };
+let searchTarget = "log";
+const typerValue = () => (searchTarget === "stock" ? stockSearch : search);
+const typerSet = (v) => (searchTarget === "stock" ? setStockSearch(v) : setSearch(v));
+$("#searchBtn").onclick = () => { searchTarget = "log"; drawTyper(); $("#typer").classList.add("on"); };
 function drawTyper() {
-  $("#typerShown").textContent = search || " ";
-  buildKbd($("#typerKbd"), { doneKey: true, current: search });
+  $("#typerShown").textContent = typerValue() || " ";
+  buildKbd($("#typerKbd"), { doneKey: true, current: typerValue() });
 }
 $("#typerKbd").onclick = (e) => {
   const b = e.target.closest("button"); if (!b) return;
   const k = b.dataset.k, c = b.dataset.c;
   if (k === "DONE") { $("#typer").classList.remove("on"); return; }
+  const cur = typerValue();
   if (k === "CASE") caseMode = nextCase();
-  else if (k === "DEL") setSearch(search.slice(0, -1));
-  else if (k === "SPACE") setSearch(search + " ");
-  else setSearch(search + (capsNext(search) ? c : c.toLowerCase()));
+  else if (k === "DEL") typerSet(cur.slice(0, -1));
+  else if (k === "SPACE") typerSet(cur + " ");
+  else typerSet(cur + (capsNext(cur) ? c : c.toLowerCase()));
   drawTyper();
 };
 $("#typer").onclick = (e) => { if (e.target.id === "typer") $("#typer").classList.remove("on"); };
-$("#backBtn").onclick = home;
+$("#backBtn").onclick = () => ($("#newitem").classList.contains("on") ? openStock() : home());
 $("#setBtn").onclick = openSettings;
 
 /* ---------- tablet niceties ---------- */
@@ -438,4 +612,4 @@ const face = new FontFace(LABEL_FONT, "url(fonts/AtkinsonHyperlegible-Bold.ttf)"
 face.load().then((f) => document.fonts.add(f)).catch(() => {}).finally(() => { if (active) render(); });
 
 // For automated tests
-window.__payaz = { renderLabel, printer, vals, loadLog };
+window.__payaz = { renderLabel, printer, vals, loadLog, S };

@@ -41,7 +41,7 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .big { color: #fff; font-size: 32px; font-weight: 900; text-align: left; padding: 24px 28px; display: flex; flex-direction: column; justify-content: flex-end; line-height: 1.1; }
 .big small { display: block; font-size: 17px; font-weight: 500; margin-top: 8px; opacity: .92; }
 .big.log    { background: linear-gradient(135deg, var(--purple), var(--navy)); }
-.big.stockx { background: linear-gradient(135deg, #8b97a8, #5d6b82); position: relative; }
+.big.stockx { background: linear-gradient(135deg, var(--blue), var(--teal)); position: relative; }
 .big.stockl { background: linear-gradient(135deg, var(--teal), #1f8fbf); }
 .big.order  { background: linear-gradient(135deg, var(--green), #3fae5e); }
 .big .soon { position: absolute; top: 20px; right: 20px; background: rgba(255,255,255,.25); border-radius: 99px; padding: 6px 14px; font-size: 15px; font-weight: 700; }
@@ -60,6 +60,43 @@ td { padding: 12px 14px; border-top: 1px solid var(--line); font-weight: 700; wh
 td.exp { color: #b3263a; }
 tr.row:active { background: #e3f6f7; }
 .empty-log { padding: 40px; text-align: center; color: var(--muted); font-size: 18px; }
+
+/* Stock (linked to the Payaz Stock app) */
+input, select, textarea { font: inherit; color: var(--ink); user-select: text; -webkit-user-select: text; }
+#stock, #newitem { flex-direction: column; gap: 12px; }
+.signin { margin: auto; width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 12px; }
+.signin h2 { margin: 0; font-size: 26px; font-weight: 900; }
+.signin p { margin: 0; color: var(--muted); font-size: 16px; }
+.inp { width: 100%; border: 3px solid var(--line); border-radius: var(--r); padding: 14px 16px; font-size: 20px; font-weight: 700; background: #fff; }
+.inp:focus { outline: none; border-color: var(--teal); }
+.linkbtn { background: none; color: var(--teal); font-weight: 700; font-size: 16px; padding: 6px; align-self: flex-start; }
+.stockrow td small { display: block; color: var(--muted); font-weight: 500; font-size: 13px; }
+.who { color: var(--muted); font-weight: 700; font-size: 15px; display: flex; gap: 12px; align-items: center; }
+.who .linkbtn { padding: 0; }
+.form { flex: 1; display: flex; gap: 18px; min-height: 0; }
+.form .fields { flex: 1; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; align-content: start; padding-bottom: 8px; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-weight: 700; font-size: 14px; color: var(--muted); }
+.form label.full { grid-column: 1 / -1; }
+.form .inp { font-size: 18px; padding: 10px 12px; }
+.form .side { width: 34%; display: flex; flex-direction: column; gap: 10px; }
+.seg { display: flex; gap: 8px; }
+.seg button { flex: 1; background: #eef2f6; padding: 10px; font-weight: 700; border: 3px solid transparent; }
+.seg button.on { border-color: var(--teal); background: #e3f6f7; }
+.withbtn { display: flex; gap: 8px; }
+.withbtn .inp { flex: 1; min-width: 0; }
+.withbtn button { background: #eef2f6; font-weight: 700; padding: 0 14px; white-space: nowrap; }
+#sheet { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: center; justify-content: center; z-index: 7; }
+#sheet.on { display: flex; }
+#sheet .box { background: #fff; border-radius: 20px; padding: 22px 26px; width: 92%; max-width: 860px; display: flex; gap: 22px; }
+#sheet .info { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#sheet h2 { margin: 0; font-size: 26px; font-weight: 900; }
+#sheet .meta { color: var(--muted); font-size: 16px; font-weight: 700; line-height: 1.6; }
+#sheet .meta b { color: var(--ink); }
+#sheet .prev { width: 300px; background: #d9e0e7; border-radius: var(--r); display: flex; align-items: center; justify-content: center; padding: 10px; }
+#sheet .prev canvas { max-width: 100%; background: #fff; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.18); image-rendering: pixelated; }
+#sheet .btns { display: flex; gap: 10px; margin-top: auto; flex-wrap: wrap; }
+#sheet .btns .print { flex: 1; min-height: 64px; font-size: 24px; }
+#sheet .btns .ghost { min-height: 64px; }
 
 /* Typing pop-up */
 #typer { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: flex-end; justify-content: center; z-index: 8; }
@@ -153,7 +190,7 @@ tr.row:active { background: #e3f6f7; }
 
 <section id="home" class="screen on">
   <button class="big log"    id="goLog">Log<small>Every order label printed, with warranty dates</small></button>
-  <button class="big stockx" id="goStock">Stock<span class="soon">Coming soon</span><small>Stock control</small></button>
+  <button class="big stockx" id="goStock">Stock<small>Print labels for stock items, add new items</small></button>
   <button class="big stockl" data-go="stock">Stock Label<small>Name, location and stock code barcode</small></button>
   <button class="big order"  data-go="order">Order Label<small>Order number, card reader and tablet</small></button>
 </section>
@@ -203,6 +240,51 @@ tr.row:active { background: #e3f6f7; }
   </table><div class="empty-log" id="logEmpty"></div></div>
 </section>
 
+<section id="stock" class="screen">
+  <div class="signin" id="stockSignin">
+    <h2>Sign in to Payaz Stock</h2>
+    <p>Use your Payaz Stock staff email and password. You only need to do this once on this tablet.</p>
+    <input class="inp" id="stEmail" type="email" autocomplete="username" placeholder="Email">
+    <input class="inp" id="stPass" type="password" autocomplete="current-password" placeholder="Password">
+    <button class="print" id="stSignInBtn" style="min-height:66px">Sign in</button>
+    <button class="linkbtn" id="stForgot">Forgot your password, or normally use Google? Set a password</button>
+  </div>
+  <div id="stockMain" style="display:none;flex:1;flex-direction:column;gap:12px;min-height:0">
+    <div class="logbar">
+      <button class="search" id="stSearchBtn"><span>&#128269;</span><span id="stSearchText"></span></button>
+      <button class="chip" id="stClear" style="display:none">Clear</button>
+      <button class="chip" id="stRefresh" title="Refresh">&#8635;</button>
+      <button class="chip primary" id="stNew">+ New item</button>
+    </div>
+    <div class="who"><span id="stCount"></span><span id="stWho"></span><button class="linkbtn" id="stSignOut">Sign out</button></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Item</th><th>Label code</th><th>Location</th><th>In stock</th></tr></thead>
+      <tbody id="stBody"></tbody>
+    </table><div class="empty-log" id="stEmpty"></div></div>
+  </div>
+</section>
+
+<section id="newitem" class="screen">
+  <div class="form">
+    <div class="fields">
+      <label class="full">Name *<input class="inp" id="niName" placeholder="e.g. SumUp Air Card Reader" maxlength="200"></label>
+      <label>SKU<input class="inp" id="niSku" maxlength="50"></label>
+      <label>Barcode (optional)<div class="withbtn"><input class="inp" id="niBarcode" placeholder="Scan or type" maxlength="100"><button id="niScan">&#128247;</button></div></label>
+      <label>Category<select class="inp" id="niCat"></select><input class="inp" id="niCatNew" placeholder="New category name" style="display:none" maxlength="100"></label>
+      <label>Location<select class="inp" id="niLoc"></select><input class="inp" id="niLocNew" placeholder="New location name" style="display:none" maxlength="100"></label>
+      <label>Tracking<div class="seg" id="niTrack"><button data-v="quantity" class="on">Quantity</button><button data-v="serial">Serial numbers</button></div></label>
+      <label>Quantity in stock<input class="inp" id="niQty" type="number" min="0" inputmode="numeric" value="0"></label>
+      <label>Reorder when below<input class="inp" id="niReorder" type="number" min="0" inputmode="numeric" value="5"></label>
+      <label class="full">Notes (optional)<input class="inp" id="niNotes" maxlength="1000"></label>
+    </div>
+    <div class="side">
+      <div class="preview" id="niPreview"></div>
+      <div class="seg" id="niPrintAfter"><button data-v="1" class="on">Print label after saving</button></div>
+      <button class="print" id="niSave" style="min-height:76px">SAVE TO STOCK</button>
+    </div>
+  </div>
+</section>
+
 <section id="settings" class="screen">
   <div class="card">
     <h3>Printer</h3>
@@ -239,6 +321,18 @@ tr.row:active { background: #e3f6f7; }
   </div>
 </section>
 
+<div id="sheet"><div class="box">
+  <div class="info">
+    <h2 id="shName"></h2>
+    <div class="meta" id="shMeta"></div>
+    <div class="btns">
+      <div class="copies"><button id="shMinus">&minus;</button><span><small>COPIES</small><b id="shCopies">1</b></span><button id="shPlus">+</button></div>
+      <button class="print" id="shPrint">PRINT LABEL</button>
+    </div>
+    <div class="btns"><button class="ghost" id="shEdit">Edit label before printing</button><button class="ghost" id="shClose">Close</button></div>
+  </div>
+  <div class="prev" id="shPrev"></div>
+</div></div>
 <div id="typer"><div class="sheet"><div class="shown" id="typerShown"></div><div class="kbd" id="typerKbd"></div></div></div>
 <div id="overlay"><div class="box" id="ovBox"><div class="msg" id="ovMsg"></div><div class="sub" id="ovSub"></div><div class="btnrow"><button id="ovAlt" class="alt" style="display:none"></button><button id="ovBtn">OK</button></div></div></div>
 <div id="camera"><video id="video" playsinline muted></video><div class="frame"></div><div class="msg">Point the camera at the barcode</div><button id="camClose">Cancel</button></div>

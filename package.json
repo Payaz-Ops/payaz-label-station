@@ -5,7 +5,8 @@
   "description": "Payaz Label Station - label printing app for the Lenovo tablet",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "sync": "npm run build:web && npx cap sync android"
+    "sync": "npm run build:web && npx cap sync android",
+    "build:firebase": "node scripts/build-firebase.mjs"
   },
   "dependencies": {
     "@capacitor-community/bluetooth-le": "8.3.0",
@@ -18,6 +19,11 @@
   },
   "devDependencies": {
     "@capacitor/cli": "8.6.0",
+    "esbuild": "0.25.10",
+    "firebase": "12.19.0",
     "qrcode-generator": "2.0.4"
+  },
+  "overrides": {
+    "@firebase/app": "0.16.2"
   }
 }
