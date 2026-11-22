@@ -618,7 +618,7 @@ function takeStart(item) {
 
 /* ---------- book in serials (same records as Payaz Stock's Book in serials) ---------- */
 // Choose the product, then scan the serial on each unit. Each scan saves at once.
-let bookItem = null, bookMode = "delivery", bookMsg = null, bookCount = 0, bookQueue = Promise.resolve();
+let bookItem = null, bookMode = "delivery", bookRef = "", bookMsg = null, bookCount = 0, bookQueue = Promise.resolve();
 function bookStart(item) {
   bookItem = item; bookCount = 0;
   bookMsg = { tone: "", text: `Now scan the serial number on each ${item.name || "unit"}.` };
@@ -630,12 +630,15 @@ function drawBookIn(card) {
     <div class="meta">SKU ${esc(item.SKU || "-")} · In stock now: <b>${recorded(item)}</b> · Booked in this time: <b>${bookCount}</b></div>
     <div class="seg" id="bkMode"><button data-v="delivery" class="${bookMode === "delivery" ? "on" : ""}">New delivery<br><small style="font-weight:500">each scan adds 1 to stock</small></button>` +
     `<button data-v="shelf" class="${bookMode === "shelf" ? "on" : ""}">Already on the shelf<br><small style="font-weight:500">already counted, stock stays the same</small></button></div>
+    ${bookMode === "delivery" ? `<button class="field" id="bkRef" style="padding:8px 14px"><div class="lbl">Delivery note or order reference (optional)</div>` +
+      `<div class="val${bookRef ? "" : " empty"}" style="font-size:22px">${bookRef ? esc(bookRef) : "Tap to type it, e.g. PO 1043"}</div></button>` : ""}
     <div class="bookmsg ${bookMsg ? bookMsg.tone : ""}" id="bkMsg">${bookMsg ? bookMsg.text : ""}</div>
     <div class="takebtns"><button class="ghost cam" id="bkCam" style="min-height:70px">&#128247; Camera</button>` +
     `<button class="ghost" id="bkType" style="min-height:70px">&#9000; Type it</button>` +
     `<button class="print" id="bkDone">DONE</button></div>`;
   card.querySelectorAll("#bkMode button").forEach((b) => (b.onclick = () => { bookMode = b.dataset.v; drawTake(); poke(); }));
   $("#bkCam").onclick = () => scanWithCamera((c) => bookScan(c.trim()));
+  if ($("#bkRef")) $("#bkRef").onclick = () => { searchTarget = "bookref"; drawTyper(); $("#typer").classList.add("on"); };
   $("#bkType").onclick = () => { searchTarget = "serial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
   $("#bkDone").onclick = () => { bookItem = null; bookMsg = null; drawTake(); };
 }
@@ -654,15 +657,15 @@ function bookScan(code) {
     else bookStart(product);
     return;
   }
-  const serial = S.normaliseSerial(code), item = bookItem, mode = bookMode;
+  const serial = S.normaliseSerial(code), item = bookItem, mode = bookMode, ref = mode === "delivery" ? bookRef.trim() : "";
   bookNote("", `Saving <b>${esc(serial)}</b>…`);
   bookQueue = bookQueue.then(async () => {
     try {
-      const r = await S.bookInSerial(item.id, serial, mode);
+      const r = await S.bookInSerial(item.id, serial, mode, ref);
       if (r.kind === "added") {
         if (bookItem && bookItem.id === item.id) bookCount++;
         bookNote("good", `\u2713 <b>${esc(serial)}</b> booked in${mode === "delivery" ? `, stock now ${r.newQty}` : ""}`,
-          serial, `Booked in: ${item.name}${mode === "delivery" ? " (new delivery)" : " (already on the shelf)"}`);
+          serial, `Booked in: ${item.name}${mode === "delivery" ? ` (new delivery${ref ? `, ${ref}` : ""})` : " (already on the shelf)"}`);
       } else if (r.kind === "exists") {
         const u = r.unit, when = shortDate(u.received_at);
         const where = u.status === "dispatched" ? `and sent on order ${u.order_number}. Tell a manager.` : `(${u.status === "in_stock" ? "in stock" : u.status}).`;
@@ -714,7 +717,7 @@ async function takeSave(auto = false) {
 document.querySelectorAll("#takeModes button").forEach((b) => (b.onclick = async () => {
   if (b.dataset.m === takeMode) return;
   if (takeItem && !(await takeSave(true))) return;
-  takeMode = b.dataset.m; bookItem = null; bookMsg = null; drawTake();
+  takeMode = b.dataset.m; bookItem = null; bookMsg = null; bookRef = ""; drawTake();
 }));
 $("#takeFind").onclick = () => { pickForTake = true; stockSearch = ""; openStock("take"); };
 $("#takeNew").onclick = () => openNewItem({});
@@ -877,9 +880,10 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
   if (searchTarget === "serial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
+  if (searchTarget === "bookref") { bookRef = v.toUpperCase().slice(0, 60); drawTake(); return; }
   if (searchTarget === "count") { takeCount = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
   return searchTarget === "stock" ? setStockSearch(v) : setSearch(v);
 };
