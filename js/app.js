@@ -71,7 +71,8 @@ const canPrint = () => mode === "stock" ? !!(vals.name || vals.code) : ["order",
 function openMode(m) {
   mode = m; copies = 1; typing = false;
   $("#fields").innerHTML = fields().map((f) =>
-    `<button class="field" data-f="${f.k}"><div class="lbl">${f.label}</div><div class="val"></div></button>`).join("");
+    `<button class="field" data-f="${f.k}"><div class="lbl">${f.label}</div><div class="val"></div>` +
+    (mode === "order" && f.type === "scan" ? `<div class="sstat" data-s="${f.k}"></div>` : "") + `</button>`).join("");
   $("#fields").querySelectorAll(".field").forEach((b) => (b.onclick = () => setActive(b.dataset.f)));
   $("#fields").style.cssText = "display:flex;flex-direction:column;gap:8px";
   setActive(fields()[0].k);
@@ -95,6 +96,12 @@ function render() {
     v.classList.toggle("empty", !val);
     if (f.k === "sumup" && val.length > 3)
       v.innerHTML = `<span style="font-weight:500">${esc(val.slice(0, -3))}</span>${esc(val.slice(-3))}`;
+    const st = b.querySelector(".sstat");
+    if (st) {
+      const info = val && serialInfo[f.k] && serialInfo[f.k].serial === val ? serialInfo[f.k] : null;
+      st.textContent = info ? info.text : "";
+      st.className = "sstat" + (info ? " " + info.tone : "");
+    }
   });
   const type = fieldOf(active).type;
   $("#keypad").style.display = type === "pad" ? "grid" : "none";
@@ -156,6 +163,61 @@ $("#kbd").onclick = (e) => {
 };
 $("#typeBtn").onclick = () => { typing = true; render(); };
 
+/* ---------- serial numbers in Payaz Stock ---------- */
+// What Payaz Stock knows about the serial in each box: { serial, tone: ok|warn|info, text }
+const serialInfo = { sumup: null, tablet: null };
+const stockLinked = () => !!(S.user && S.isStaff && S.lookupSerial);
+const shortDate = (iso) => (iso ? new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "");
+async function checkSerial(k) {
+  const serial = vals[k];
+  if (!serial) { serialInfo[k] = null; return; }
+  if (!stockLinked()) {
+    serialInfo[k] = { serial, tone: "warn", text: "Not signed in to Payaz Stock: this unit won't be recorded" };
+    render(); return;
+  }
+  serialInfo[k] = { serial, tone: "info", text: "Checking Payaz Stock…" };
+  render();
+  let info;
+  try {
+    const u = await S.lookupSerial(serial);
+    if (!u) info = { tone: "warn", text: "Not booked in to Payaz Stock. Tell a manager." };
+    else if (u.status === "in_stock") info = { tone: "ok", text: `✓ ${u.item_name}, in stock` };
+    else if (u.status === "dispatched") info = vals.order && u.order_number === vals.order
+      ? { tone: "ok", text: `✓ Already recorded on this order` }
+      : { tone: "warn", text: `Already sent on order ${u.order_number} (${shortDate(u.dispatched_at)}). Check before sending.` };
+    else info = { tone: "warn", text: `Recorded as ${u.status === "damaged" ? "damaged" : u.status} in Payaz Stock. Check before sending.` };
+  } catch (e) {
+    info = { tone: "warn", text: "Couldn't check Payaz Stock: " + friendlyError(e) };
+  }
+  if (vals[k] === serial) { serialInfo[k] = { serial, ...info }; render(); }
+}
+
+/** After an Order Label prints: mark each scanned unit as sent on the order.
+ *  Returns { problems: [text], done: [text] }. */
+async function recordDispatch(values) {
+  const boxes = [["sumup", "Card reader"], ["tablet", "Tablet"]].filter(([k]) => values[k]);
+  const out = { problems: [], done: [] };
+  if (!boxes.length) return out;
+  if (!values.order) return out; // a serial label on its own, not an order
+  if (!stockLinked() || !S.dispatchSerial) {
+    out.problems.push("Not signed in to Payaz Stock, so these units weren't marked as sent. Open Stock and sign in, then print again.");
+    return out;
+  }
+  for (const [k, name] of boxes) {
+    try {
+      const r = await S.dispatchSerial(values[k], values.order);
+      if (r.kind === "dispatched") out.done.push(`${r.unit.item_name || name} ${values[k]} sent on order ${values.order}`);
+      else if (r.kind === "same_order") out.done.push(`${name} ${values[k]} was already on this order`);
+      else if (r.kind === "not_booked_in") out.problems.push(`${name} ${values[k]} was never booked in to Payaz Stock. A manager has been told.`);
+      else if (r.kind === "already_sent") out.problems.push(`${r.unit.item_name || name} ${values[k]} was already sent on order ${r.unit.order_number}. A manager has been told.`);
+      else out.problems.push(`${r.unit.item_name || name} ${values[k]} is recorded as ${r.unit.status} in Payaz Stock. A manager has been told.`);
+    } catch (e) {
+      out.problems.push(`${name} ${values[k]} wasn't recorded: ${friendlyError(e)}. Print the label again when the internet is back.`);
+    }
+  }
+  return out;
+}
+
 // Put a scanned code in the right box.
 function acceptScan(code) {
   code = code.trim().replace(/[^\x20-\x7E]/g, "").slice(0, 40);
@@ -169,6 +231,9 @@ function acceptScan(code) {
     if (target === "order") target = !vals.sumup ? "sumup" : "tablet";
     vals[target] = code;
     active = ["sumup", "tablet"].find((f) => !vals[f]) || target; // next empty scan box
+    typing = false; poke(); render();
+    checkSerial(target);
+    return;
   }
   typing = false; poke(); render();
 }
@@ -311,9 +376,20 @@ $("#printBtn").onclick = async () => {
   const values = mode === "stock"
     ? { name: vals.name, location: vals.location, code: vals.code }
     : { order: vals.order, sumup: vals.sumup, tablet: vals.tablet };
-  if (await doPrint(printKind(), values, copies, MODES[mode].logged)) setTimeout(() => { hideOverlay(); home(); }, 1200);
+  if (!(await doPrint(printKind(), values, copies, MODES[mode].logged))) return;
+  if (mode === "order" && (values.sumup || values.tablet) && values.order) {
+    overlay("Printed ✓", "Recording in Payaz Stock…", false, true);
+    const r = await recordDispatch(values);
+    if (r.problems.length) {
+      overlay("Printed, but check this", [...r.problems, ...r.done].join("\n"), true);
+      $("#ovBtn").onclick = () => { hideOverlay(); $("#ovBtn").onclick = hideOverlay; home(); };
+      return;
+    }
+    overlay("Printed ✓", r.done.join("\n") || "Added to the log", false, true);
+  }
+  setTimeout(() => { hideOverlay(); home(); }, 1200);
 };
-$("#clearBtn").onclick = () => { vals[active] = ""; render(); };
+$("#clearBtn").onclick = () => { vals[active] = ""; if (active in serialInfo) serialInfo[active] = null; render(); };
 $("#cMinus").onclick = () => { copies = Math.max(1, copies - 1); render(); };
 $("#cPlus").onclick = () => { copies = Math.min(20, copies + 1); render(); };
 

@@ -74,7 +74,7 @@ icon and choose **Pin**.
 | **Log** | Every Order Label printed: order number, date, card reader, tablet and **warranty expiry** (12 months after printing; expired dates show in red). Scan or type a serial to find it, tap a row to delete it, and **Export CSV** to email it or save it to Drive. |
 | **Stock** | **Stock take** linked to the Payaz Stock app (sign in once with your Payaz Stock staff email and password). Choose **Stock take**, **Add stock** or **Remove stock**, then scan: each scan of an item (or its shelf label) counts 1, or use + / − or type the number. **Save**, or just scan the next item, and the new quantity goes into Payaz Stock with the same history entry the stock app writes ("Stock Take Audit (Recorded: 12, Counted: 9) (Old: 12 → New: 9)"). Unknown barcodes can be added as new items. |
 | **Stock Label** | **Shelf labels** for Payaz Stock items: search or scan, tap an item and print. The barcode on the label is the item's own code in Payaz Stock (its barcode, or its SKU if it has none), so scanning the shelf label in a stock take finds the item. **✎ Edit item & label** changes the item in Payaz Stock (name, SKU, barcode, category, location, notes, photo) and prints the new label, so a new code is saved in the system too. **+ New item** adds a product with a photo. **Custom label** prints a one-off label you type yourself (no sign-in needed). |
-| **Order Label** | Type the order number (tap **PZ** for numbers like 48374PZ) and scan the card reader and/or tablet. One box filled prints that on its own; two or three print one combined label. Each one is added to the Log. |
+| **Order Label** | Type the order number (tap **PZ** for numbers like 48374PZ) and scan the card reader and/or tablet. One box filled prints that on its own; two or three print one combined label. Each one is added to the Log. If you're signed in to Payaz Stock (under **Stock**), each scanned unit shows whether it's in stock, and printing an order label marks it **sent on that order** in Payaz Stock (stock goes down by 1). Units never booked in, or already sent on another order, are flagged to managers. |
 
 The log is saved on the tablet. In the Android app it's also copied to
 **Documents/PayazLabels/payaz-label-log.csv** after every print, so you can find it with the
@@ -85,7 +85,8 @@ Files app. Uninstalling the app deletes the in-app log, so export it first.
 ## Payaz Stock link (for someone technical)
 
 `js/stock.js` uses the Payaz Stock app's Firebase project (`oceanic-cache-418312`, database
-`stock`) and its security rules: any signed-in user can read items, locations and categories;
+`stock`) and its security rules. Order Labels write to `serial_units` and `serial_events` (see
+`dispatchSerial`, kept in step with Payaz Stock's `src/lib/serials.ts`): any signed-in user can read items, locations and categories;
 adding items needs an active `staff_accounts` profile. New items are written exactly like the
 stock app's own Add Item (`items/{itm_…}` plus a `movements/{mov_…}` "in" record).
 Sign-in is email and password only (Google sign-in doesn't work inside the Android app); staff

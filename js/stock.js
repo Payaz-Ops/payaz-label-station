@@ -266,4 +266,89 @@ export const stock = {
     if (!this.categories.includes(item.category)) this.categories = [...this.categories, item.category].sort();
     return item;
   },
+
+  /* ---------- serial numbers (tablets, card readers) ----------
+     The same records as Payaz Stock's src/lib/serials.ts: serial_units/{key} for
+     each unit (booked in there by scanning) and serial_events, a history nobody
+     can change or delete. Keep the two in step. */
+
+  /** The same clean-up as this app's scanner and Payaz Stock. */
+  normaliseSerial: (raw) => String(raw || "").trim().replace(/[^\x20-\x7E]/g, "").toUpperCase().slice(0, 40).trim(),
+  serialKey(serial) { return this.normaliseSerial(serial).replace(/\//g, "_"); },
+
+  /** The unit's record, or null if it was never booked in. */
+  async lookupSerial(serial) {
+    init();
+    const snap = await getDoc(doc(db, "serial_units", this.serialKey(serial)));
+    return snap.exists() ? snap.data() : null;
+  },
+
+  /**
+   * Mark a unit as sent on an order: its record, stock down by 1 (with a movement)
+   * and a history entry, in one transaction. Problems (never booked in, already
+   * sent on another order, damaged) are written to the history for managers.
+   * Returns { kind: "dispatched" | "same_order" | "already_sent" | "not_in_stock" | "not_booked_in", unit }.
+   */
+  async dispatchSerial(rawSerial, orderNumber) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const serial = this.normaliseSerial(rawSerial), key = this.serialKey(rawSerial);
+    const order = String(orderNumber || "").trim();
+    const who = { id: this.user.uid, name: this.userName };
+    const unitRef = doc(db, "serial_units", key);
+    let result;
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(unitRef);
+      const now = new Date().toISOString();
+      const event = (extra) => {
+        const id = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        const e = { id, serial_key: key, serial_number: serial, order_number: order, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now, ...extra };
+        Object.keys(e).forEach((k) => (e[k] === undefined || e[k] === "") && delete e[k]);
+        tx.set(doc(db, "serial_events", id), e);
+      };
+      if (!snap.exists()) {
+        event({ type: "not_booked_in", note: "Sent on an order but never booked in" });
+        result = { kind: "not_booked_in", unit: null };
+        return;
+      }
+      const unit = snap.data();
+      const known = { item_id: unit.item_id, item_name: unit.item_name };
+      if (unit.status === "dispatched") {
+        if (unit.order_number === order) { result = { kind: "same_order", unit }; return; }
+        event({ ...known, type: "already_sent", note: `Already sent on order ${unit.order_number || "?"}` });
+        result = { kind: "already_sent", unit };
+        return;
+      }
+      if (unit.status !== "in_stock") {
+        event({ ...known, type: "not_in_stock", note: `Recorded as ${unit.status}` });
+        result = { kind: "not_in_stock", unit };
+        return;
+      }
+      const itemRef = doc(db, "items", unit.item_id);
+      const itemSnap = await tx.get(itemRef);
+      const changes = {
+        status: "dispatched", order_number: order, dispatched_at: now,
+        dispatched_by_id: who.id, dispatched_by_name: who.name, dispatched_app: "Label Station", updated_at: now,
+      };
+      tx.update(unitRef, changes);
+      if (itemSnap.exists()) {
+        const item = { id: itemSnap.id, ...itemSnap.data() };
+        const oldQty = Number(item.quantity_on_hand) || 0, newQty = Math.max(0, oldQty - 1);
+        const movId = rid("mov");
+        tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", updated_at: now });
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+          serial_number: serial, direction: "out", quantity_delta: 1,
+          location_from: item.location, location_to: "External",
+          user_id: who.id, user_name: who.name,
+          reason: `[Sent on order ${order}] ${serial} (Old: ${oldQty} → New: ${newQty})`, source: "scan",
+        });
+        const i = this.items.findIndex((x) => x.id === item.id);
+        if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: newQty, updated_at: now };
+      }
+      event({ ...known, type: "dispatched" });
+      result = { kind: "dispatched", unit: { ...unit, ...changes } };
+    });
+    return result;
+  },
 };

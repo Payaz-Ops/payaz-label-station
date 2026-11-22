@@ -142,6 +142,11 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 .field .val { font-size: 26px; font-weight: 900; min-height: 34px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .field .val.empty { color: #b4bfcc; font-weight: 500; font-size: 19px; line-height: 34px; }
 .field.active { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(0,155,169,.18); }
+.field .sstat { font-size: 14px; font-weight: 700; min-height: 0; white-space: normal; }
+.field .sstat:empty { display: none; }
+.field .sstat.ok { color: #3c6b12; }
+.field .sstat.info { color: var(--muted); }
+.field .sstat.warn { color: #b3263a; }
 .preview { flex: 1; background: #d9e0e7; border-radius: var(--r); display: flex; align-items: center; justify-content: center; min-height: 0; padding: 10px; }
 .preview canvas { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.18); border-radius: 6px; image-rendering: pixelated; }
 .panel { flex: 1; background: var(--card); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; min-height: 0; }
@@ -194,7 +199,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 #overlay.on { display: flex; }
 #overlay .box { background: #fff; border-radius: 20px; padding: 34px 40px; min-width: 460px; max-width: 760px; text-align: center; }
 #overlay .msg { font-size: 30px; font-weight: 900; }
-#overlay .sub { font-size: 18px; color: var(--muted); margin-top: 10px; }
+#overlay .sub { font-size: 18px; color: var(--muted); margin-top: 10px; white-space: pre-line; }
 #overlay .box.err .msg { color: #b3263a; }
 #overlay .btnrow { display: flex; gap: 12px; justify-content: center; }
 #overlay .btnrow button.alt { background: #eef2f6; color: var(--ink); }
