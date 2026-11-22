@@ -579,6 +579,7 @@ const MODE_TEXT = {
   take: { name: "Stock take", counter: "COUNTED", hint: "Scan every unit of an item: each scan counts 1. Scanning the next item saves this one." },
   add: { name: "Add stock", counter: "ADDING", hint: "Scan each unit you're putting into stock." },
   remove: { name: "Remove stock", counter: "REMOVING", hint: "Scan each unit you're taking out of stock." },
+  bookin: { name: "Book in serials", hint: "Scan the product barcode (or its shelf label), or tap Find an item. Then scan the serial number on each unit." },
 };
 const recorded = (i) => Number(i.quantity_on_hand) || 0;
 function takeResult() {
@@ -588,7 +589,8 @@ function takeResult() {
 function drawTake() {
   document.querySelectorAll("#takeModes button").forEach((b) => b.classList.toggle("on", b.dataset.m === takeMode));
   const M = MODE_TEXT[takeMode], card = $("#takeCard");
-  if (!takeItem) {
+  if (takeMode === "bookin" && bookItem) drawBookIn(card);
+  else if (!takeItem) {
     card.innerHTML = `<div class="scanwait"><div class="beam"></div><h2>Scan an item or its shelf label</h2>
       <p style="margin:0;color:var(--muted);font-size:17px">${M.hint}</p>
       <div class="btns" style="display:flex;gap:10px"><button class="ghost cam" id="takeCam">&#128247; Use camera</button></div></div>`;
@@ -607,10 +609,74 @@ function drawTake() {
     $("#tkSave").onclick = () => takeSave();
   }
   $("#takeSession").innerHTML = `<h4>THIS SESSION</h4>` + (takeSession.length ? takeSession.map((x) =>
-    `<div class="it">${esc(x.name)}<small>${x.what} · ${x.time}</small></div>`).join("") : `<div class="it"><small>Nothing saved yet.</small></div>`);
+    `<div class="it${x.bad ? " bad" : ""}">${esc(x.name)}<small>${esc(x.what)} · ${x.time}</small></div>`).join("") : `<div class="it"><small>Nothing saved yet.</small></div>`);
 }
-function takeStart(item) { takeItem = item; takeCount = 1; drawTake(); poke(); }
+function takeStart(item) {
+  if (takeMode === "bookin") { bookStart(item); return; }
+  takeItem = item; takeCount = 1; drawTake(); poke();
+}
+
+/* ---------- book in serials (same records as Payaz Stock's Book in serials) ---------- */
+// Choose the product, then scan the serial on each unit. Each scan saves at once.
+let bookItem = null, bookMode = "delivery", bookMsg = null, bookCount = 0, bookQueue = Promise.resolve();
+function bookStart(item) {
+  bookItem = item; bookCount = 0;
+  bookMsg = { tone: "", text: `Now scan the serial number on each ${item.name || "unit"}.` };
+  drawTake(); poke();
+}
+function drawBookIn(card) {
+  const item = S.items.find((i) => i.id === bookItem.id) || bookItem;
+  card.innerHTML = `<h2>${esc(item.name || "(no name)")}</h2>
+    <div class="meta">SKU ${esc(item.SKU || "-")} · In stock now: <b>${recorded(item)}</b> · Booked in this time: <b>${bookCount}</b></div>
+    <div class="seg" id="bkMode"><button data-v="delivery" class="${bookMode === "delivery" ? "on" : ""}">New delivery<br><small style="font-weight:500">each scan adds 1 to stock</small></button>` +
+    `<button data-v="shelf" class="${bookMode === "shelf" ? "on" : ""}">Already on the shelf<br><small style="font-weight:500">already counted, stock stays the same</small></button></div>
+    <div class="bookmsg ${bookMsg ? bookMsg.tone : ""}" id="bkMsg">${bookMsg ? bookMsg.text : ""}</div>
+    <div class="takebtns"><button class="ghost cam" id="bkCam" style="min-height:70px">&#128247; Camera</button>` +
+    `<button class="ghost" id="bkType" style="min-height:70px">&#9000; Type it</button>` +
+    `<button class="print" id="bkDone">DONE</button></div>`;
+  card.querySelectorAll("#bkMode button").forEach((b) => (b.onclick = () => { bookMode = b.dataset.v; drawTake(); poke(); }));
+  $("#bkCam").onclick = () => scanWithCamera((c) => bookScan(c.trim()));
+  $("#bkType").onclick = () => { searchTarget = "serial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
+  $("#bkDone").onclick = () => { bookItem = null; bookMsg = null; drawTake(); };
+}
+function bookNote(tone, html, sessionName, sessionWhat) {
+  bookMsg = { tone, text: html };
+  if (sessionName) takeSession.unshift({ name: sessionName, what: sessionWhat, time: hhmm(), bad: tone === "bad" });
+  drawTake(); poke();
+}
+function bookScan(code) {
+  code = (code || "").trim();
+  if (!code) return;
+  const product = S.findByCode(code);
+  if (!bookItem) { if (product) bookStart(product); else overlay("Not in the stock app", `Nothing has the code ${code}. Scan the product barcode first, then the serial numbers.`, true); return; }
+  if (product) {
+    if (product.id === bookItem.id) bookNote("bad", `<b>${esc(code)}</b> is the product barcode, not a serial number. Scan the barcode marked S/N or Serial.`);
+    else bookStart(product);
+    return;
+  }
+  const serial = S.normaliseSerial(code), item = bookItem, mode = bookMode;
+  bookNote("", `Saving <b>${esc(serial)}</b>…`);
+  bookQueue = bookQueue.then(async () => {
+    try {
+      const r = await S.bookInSerial(item.id, serial, mode);
+      if (r.kind === "added") {
+        if (bookItem && bookItem.id === item.id) bookCount++;
+        bookNote("good", `\u2713 <b>${esc(serial)}</b> booked in${mode === "delivery" ? `, stock now ${r.newQty}` : ""}`,
+          serial, `Booked in: ${item.name}${mode === "delivery" ? " (new delivery)" : " (already on the shelf)"}`);
+      } else if (r.kind === "exists") {
+        const u = r.unit, when = shortDate(u.received_at);
+        const where = u.status === "dispatched" ? `and sent on order ${u.order_number}. Tell a manager.` : `(${u.status === "in_stock" ? "in stock" : u.status}).`;
+        bookNote("bad", `<b>${esc(serial)}</b> was already booked in on ${when} by ${esc(u.received_by_name)} as ${esc(u.item_name)} ${where}`,
+          serial, `Already booked in (${u.item_name})`);
+      } else bookNote("bad", esc(r.message), serial, r.message);
+    } catch (e) {
+      bookNote("bad", `<b>${esc(serial)}</b> wasn't saved: ${esc(friendlyError(e))}`, serial, "Not saved: " + friendlyError(e));
+    }
+  });
+}
+
 async function takeScan(code) {
+  if (takeMode === "bookin") { bookScan(code); return; }
   if (!code || takeBusy) return;
   const item = S.findByCode(code);
   if (!item) {
@@ -648,7 +714,7 @@ async function takeSave(auto = false) {
 document.querySelectorAll("#takeModes button").forEach((b) => (b.onclick = async () => {
   if (b.dataset.m === takeMode) return;
   if (takeItem && !(await takeSave(true))) return;
-  takeMode = b.dataset.m; drawTake();
+  takeMode = b.dataset.m; bookItem = null; bookMsg = null; drawTake();
 }));
 $("#takeFind").onclick = () => { pickForTake = true; stockSearch = ""; openStock("take"); };
 $("#takeNew").onclick = () => openNewItem({});
@@ -810,9 +876,10 @@ $("#exportBtn").onclick = async () => {
   catch (e) { if (!/cancel/i.test(e && e.message)) overlay("Couldn't export", (e && e.message) || String(e), true); }
 };
 // Search typing pop-up
-let searchTarget = "log";
-const typerValue = () => (searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+let searchTarget = "log", serialTyped = "";
+const typerValue = () => (searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
+  if (searchTarget === "serial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
   if (searchTarget === "count") { takeCount = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
   return searchTarget === "stock" ? setStockSearch(v) : setSearch(v);
 };
@@ -824,7 +891,11 @@ function drawTyper() {
 $("#typerKbd").onclick = (e) => {
   const b = e.target.closest("button"); if (!b) return;
   const k = b.dataset.k, c = b.dataset.c;
-  if (k === "DONE") { $("#typer").classList.remove("on"); return; }
+  if (k === "DONE") {
+    $("#typer").classList.remove("on");
+    if (searchTarget === "serial" && serialTyped.trim()) bookScan(serialTyped);
+    return;
+  }
   const cur = typerValue();
   if (k === "CASE") caseMode = nextCase();
   else if (k === "DEL") typerSet(cur.slice(0, -1));

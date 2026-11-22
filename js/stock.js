@@ -351,4 +351,63 @@ export const stock = {
     });
     return result;
   },
+
+  /**
+   * Book one unit in (the same as Payaz Stock's Book in serials): its record and a
+   * history entry; for a new delivery, stock up by 1 with a movement.
+   *   mode: "delivery" (adds 1 to stock) or "shelf" (already counted, stock unchanged)
+   * Returns { kind: "added" | "exists" | "invalid", unit, message }.
+   */
+  async bookInSerial(itemId, rawSerial, mode, ref = "") {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const serial = this.normaliseSerial(rawSerial), key = this.serialKey(rawSerial);
+    if (serial.length < 4) return { kind: "invalid", message: "That scan is too short to be a serial number." };
+    const who = { id: this.user.uid, name: this.userName };
+    const unitRef = doc(db, "serial_units", key), itemRef = doc(db, "items", itemId);
+    ref = String(ref || "").trim().slice(0, 60);
+    let result;
+    await runTransaction(db, async (tx) => {
+      const existing = await tx.get(unitRef);
+      if (existing.exists()) { result = { kind: "exists", unit: existing.data() }; return; }
+      const itemSnap = await tx.get(itemRef);
+      if (!itemSnap.exists()) throw new Error("That item isn't in the stock app any more.");
+      const item = { id: itemSnap.id, ...itemSnap.data() };
+      const now = new Date().toISOString();
+      const unit = {
+        serial_key: key, serial_number: serial, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+        status: "in_stock", received_at: now, received_by_id: who.id, received_by_name: who.name,
+        received_mode: mode === "shelf" ? "shelf" : "delivery", updated_at: now,
+      };
+      if (ref) unit.received_ref = ref;
+      tx.set(unitRef, unit);
+      let newQty = Number(item.quantity_on_hand) || 0;
+      if (unit.received_mode === "delivery") {
+        const oldQty = newQty; newQty = oldQty + 1;
+        const movId = rid("mov");
+        tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", updated_at: now });
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+          serial_number: serial, direction: "in", quantity_delta: 1,
+          location_from: "External", location_to: item.location,
+          user_id: who.id, user_name: who.name,
+          reason: `[Serial booked in${ref ? `: ${ref}` : ""}] ${serial} (Old: ${oldQty} → New: ${newQty})`, source: "scan",
+        });
+      } else if (item.tracking_type !== "serial") {
+        tx.update(itemRef, { tracking_type: "serial", updated_at: now });
+      }
+      const id = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      const e = {
+        id, serial_key: key, serial_number: serial, type: "received", item_id: item.id, item_name: item.name,
+        note: unit.received_mode === "delivery" ? "New delivery: added to stock" : "Already on the shelf: stock count unchanged",
+        user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now,
+      };
+      if (ref) e.ref = ref;
+      tx.set(doc(db, "serial_events", id), e);
+      const i = this.items.findIndex((x) => x.id === item.id);
+      if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: newQty, tracking_type: "serial", updated_at: now };
+      result = { kind: "added", unit, newQty };
+    });
+    return result;
+  },
 };
