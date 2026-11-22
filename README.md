@@ -4,7 +4,7 @@
 
 On the Lenovo tablet, open this link in Chrome and install the file it downloads:
 
-**https://github.com/colin-payaz/payaz-label-station/releases/latest/download/payaz-labels.apk**
+**https://github.com/Payaz-Ops/payaz-label-station/releases/latest/download/payaz-labels.apk**
 
 The first time, Android asks you to allow installing apps from Chrome: tap **Settings**,
 turn on **Allow from this source**, then go back and tap **Install**. Open **Payaz Labels**,
@@ -40,7 +40,7 @@ internet.
 
 ## The app's web address
 
-**https://colin-payaz.github.io/payaz-label-station/**
+**https://payaz-ops.github.io/payaz-label-station/**
 
 It's hosted free on GitHub Pages from this repository's `gh-pages` branch. To update the
 app, push changes to `main`, then update `gh-pages` to match:
@@ -53,7 +53,7 @@ Then bump `VERSION` in `sw.js` so tablets pick up the change.
 
 ## Step 2: Set up the tablet
 
-1. Open **Chrome** on the tablet and go to **colin-payaz.github.io/payaz-label-station**.
+1. Open **Chrome** on the tablet and go to **payaz-ops.github.io/payaz-label-station**.
 2. Tap Chrome's **⋮** menu, then **Add to Home screen** (or **Install app**).
 3. Open **Payaz Labels** from the home screen. It opens full screen.
 4. Switch the printer on and tap **Connect printer** (top right). Allow **Nearby devices**

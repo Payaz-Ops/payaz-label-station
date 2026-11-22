@@ -1,6 +1,6 @@
 # Builds the Payaz Labels Android app (APK) and publishes it as a GitHub Release.
 # Download on the tablet from:
-#   https://github.com/colin-payaz/payaz-label-station/releases/latest/download/payaz-labels.apk
+#   https://github.com/Payaz-Ops/payaz-label-station/releases/latest/download/payaz-labels.apk
 name: Build Android app
 
 on:
