@@ -162,6 +162,11 @@ export const stock = {
       const snap = await tx.get(itemRef);
       if (!snap.exists()) throw new Error("That item isn't in the stock app any more.");
       const item = { id: snap.id, ...snap.data() };
+      if (item.tracking_type === "serial") {
+        const err = new Error(`${item.name} is tracked by serial number, so its count can't be changed here. Use Book in serials for new units; units come off stock when sent on an Order Label.`);
+        err.code = "serial-locked";
+        throw err;
+      }
       const oldQty = Number(item.quantity_on_hand) || 0;
       const newQty = newQuantity !== undefined ? Math.max(0, Math.round(newQuantity)) : Math.max(0, oldQty + Math.round(change || 0));
       const movement = {
@@ -237,7 +242,8 @@ export const stock = {
       barcode: (input.barcode || "").trim(),
       category: (input.category || "").trim() || "General",
       tracking_type: input.tracking_type === "serial" ? "serial" : "quantity",
-      quantity_on_hand: Math.max(0, Number(input.quantity_on_hand) || 0),
+      // A serial-tracked product starts at 0; its units are booked in one by one
+      quantity_on_hand: input.tracking_type === "serial" ? 0 : Math.max(0, Number(input.quantity_on_hand) || 0),
       reorder_threshold: Math.max(0, Number(input.reorder_threshold ?? 5) || 0),
       unit_cost: 0,
       supplier: "",
@@ -335,7 +341,8 @@ export const stock = {
         const item = { id: itemSnap.id, ...itemSnap.data() };
         const oldQty = Number(item.quantity_on_hand) || 0, newQty = Math.max(0, oldQty - 1);
         const movId = rid("mov");
-        tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", updated_at: now });
+        // last_serial_key: the database rules check this serial changed in the same save
+        tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", last_serial_key: key, updated_at: now });
         tx.set(doc(db, "movements", movId), {
           id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
           serial_number: serial, direction: "out", quantity_delta: 1,
@@ -385,7 +392,8 @@ export const stock = {
       if (unit.received_mode === "delivery") {
         const oldQty = newQty; newQty = oldQty + 1;
         const movId = rid("mov");
-        tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", updated_at: now });
+        // last_serial_key: the database rules check this serial changed in the same save
+        tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", last_serial_key: key, updated_at: now });
         tx.set(doc(db, "movements", movId), {
           id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
           serial_number: serial, direction: "in", quantity_delta: 1,

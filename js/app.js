@@ -613,6 +613,13 @@ function drawTake() {
 }
 function takeStart(item) {
   if (takeMode === "bookin") { bookStart(item); return; }
+  if (item && item.tracking_type === "serial") {
+    // Serial-tracked: the count is locked, units are booked in one by one
+    overlay(`${item.name} is tracked by serial number`, "Its stock count can't be changed here. Book new units in by their serial numbers; they come off stock when sent on an Order Label.", false, false,
+      { label: "Book in serials", run: async () => { if (takeItem && !(await takeSave(true))) return; takeMode = "bookin"; bookStart(item); } });
+    return;
+  }
+
   takeItem = item; takeCount = 1; drawTake(); poke();
 }
 
@@ -686,6 +693,7 @@ async function takeScan(code) {
     overlay("Not in the stock app", `Nothing has the code ${code}.`, false, false, { label: "Add it as a new item", run: () => openNewItem({ barcode: code }) });
     return;
   }
+  if (item.tracking_type === "serial") { takeStart(item); return; }
   if (takeItem && takeItem.id === item.id) { takeCount++; drawTake(); poke(); return; }
   if (takeItem && !(await takeSave(true))) return;
   takeStart(item);
@@ -763,6 +771,9 @@ function newItemInput() {
   };
 }
 function drawNewItem() {
+  // A serial-tracked product starts at 0: its units are booked in by serial afterwards
+  $("#niQty").disabled = niTracking === "serial";
+  if (niTracking === "serial") $("#niQty").value = "0";
   $("#niPhoto").style.backgroundImage = niPhoto ? `url("${niPhoto}")` : "";
   $("#niPhoto").textContent = niPhoto ? "" : "No photo";
   $("#niPhotoBtn").innerHTML = niPhoto ? "&#128247; Change photo" : "&#128247; Add photo";
