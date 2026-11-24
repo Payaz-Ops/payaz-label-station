@@ -529,7 +529,9 @@ export const stock = {
 
   /* ---------- spot checks (small blind counts, Payaz Stock's spot_checks) ----------
      Keep SPOT in step with Payaz Stock's src/lib/spotChecks.ts. */
-  SPOT: { items: 10, minSerial: 3, bigValue: 50, bigItems: 3, deep: 15, days: [1, 15] },
+// sampleOver: serial items with more units than this are counted by a total + a sample
+  // of `sample` serials (+ `sampleMore` if most were already scanned at the last check)
+  SPOT: { items: 10, minSerial: 3, bigValue: 50, bigItems: 3, deep: 15, days: [1, 15], sampleOver: 15, sample: 30, sampleMore: 10 },
 
   /** The most recent scheduled date (1st or 15th) up to today, at 00:00. */
   lastScheduledDate(now = new Date()) {
@@ -605,6 +607,20 @@ export const stock = {
       return { item, expected: serials.length, serials };
     }
     return { item, expected: Number(item && item.quantity_on_hand) || 0, serials: null };
+  },
+
+  /** The serials scanned for an item at the most recent earlier spot check (to ask for
+   *  different boxes this time). */
+  async lastSpotSample(itemId, excludeCheckId) {
+    init();
+    const q = await getDocs(query(collection(db, "spot_checks"), orderBy("created_at", "desc"), limit(12)));
+    for (const d of q.docs) {
+      const c = d.data();
+      if (c.id === excludeCheckId) continue;
+      const r = c.results && c.results[itemId];
+      if (r && Array.isArray(r.sample)) return r.sample;
+    }
+    return [];
   },
 
   /** Saves one item's result on the check, and when it was last counted on the item. */

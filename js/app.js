@@ -620,7 +620,11 @@ $("#stCustom2").onclick = () => openMode("stock");
 // The counter is never shown what the system expects. A count that doesn't match is
 // counted again; a big difference adds a deeper count; managers see the results in
 // Payaz Stock and decide what to do about differences.
-let spot = { check: null, count: 0, scanned: [], attempt: 1, first: null, msg: null, busy: false, status: null };
+let spot = { check: null, count: 0, scanned: [], attempt: 1, first: null, msg: null, busy: false, status: null, exp: null };
+// Serial items with lots of units (more than SPOT.sampleOver): the boxes are counted
+// (a typed total), then any 30 serials are scanned and checked against the system.
+// If most were scanned at the last check too, 10 more different ones are asked for.
+const fresh = () => ({ count: 0, scanned: [], attempt: 1, first: null, msg: null, busy: false, exp: null });
 const spotList = () => spot.check ? [...spot.check.item_ids, ...(spot.check.deep_item_ids || [])] : [];
 const spotCurrentId = () => spotList().find((id) => !(spot.check.results || {})[id]);
 const spotItem = (id) => S.items.find((i) => i.id === id) || { id, name: "(item no longer in stock app)" };
@@ -636,6 +640,100 @@ $("#spotBtn").onclick = async () => {
   if (takeItem && !(await takeSave(true))) return;
   takeMode = "spot"; drawTake();
 };
+
+async function spotLoad(id) {
+  spot.exp = { forId: id, loading: true };
+  try {
+    const e = await S.spotExpected(id);
+    const sampled = e.serials && e.expected > S.SPOT.sampleOver;
+    const prev = sampled ? new Set(await S.lastSpotSample(id, spot.check.id)) : new Set();
+    spot.exp = { forId: id, ...e, sampled, prev, phase: sampled ? "total" : "count", sample: [], need: sampled ? Math.min(S.SPOT.sample, e.expected) : 0, more: false, totals: [] };
+  } catch (err) {
+    spot.exp = null; overlay("Couldn't load the item", friendlyError(err), true);
+  }
+  drawTake();
+}
+
+function drawSampled(card, item, head) {
+  const x = spot.exp;
+  if (x.phase === "total") {
+    card.innerHTML = `${head}
+      <div class="meta">Step 1 of 2: count the boxes on the shelf and enter the total. (Then you'll scan some serials.)</div>
+      <div class="counter"><button id="spMinus">&minus;</button><button class="num" id="spNum"><small>BOXES</small><b>${spot.count}</b></button><button id="spPlus">+</button></div>
+      ${spot.msg ? `<div class="bookmsg ${spot.msg.tone}">${spot.msg.text}</div>` : ""}
+      <div class="takebtns"><button class="print" id="spOk">NEXT</button></div>`;
+    $("#spMinus").onclick = () => { spot.count = Math.max(0, spot.count - 1); drawTake(); poke(); };
+    $("#spPlus").onclick = () => { spot.count++; drawTake(); poke(); };
+    $("#spNum").onclick = () => { searchTarget = "spot"; drawTyper(); $("#typer").classList.add("on"); };
+    $("#spOk").onclick = spotTotalDone;
+    return;
+  }
+  const okN = x.sample.filter((v) => v.ok).length, enough = x.sample.length >= x.need;
+  card.innerHTML = `${head}
+    <div class="meta">Step 2 of 2: scan the serial number on <b>${x.need}</b> boxes (any boxes)${x.more ? ", <b>not</b> ones checked last time" : ""}.</div>
+    <div class="spotcount">${x.sample.length} / ${x.need}</div>
+    <div class="spotserials">${x.sample.map((v) => `<span style="${v.ok ? "" : "background:#fde7e9;color:#b3263a"}" title="${esc(v.why || "")}">${v.ok ? "\u2713" : "\u26a0"} ${esc(v.sn)}</span>`).join("")}</div>
+    <div class="meta">${okN} on the system${x.sample.length - okN ? ` · <b style="color:#b3263a">${x.sample.length - okN} problem${x.sample.length - okN === 1 ? "" : "s"}</b>` : ""}</div>
+    ${spot.msg ? `<div class="bookmsg ${spot.msg.tone}">${spot.msg.text}</div>` : ""}
+    <div class="takebtns"><button class="ghost cam" id="spCam" style="min-height:70px">&#128247; Camera</button>
+      ${enough ? "" : `<button class="ghost" id="spFewer" style="min-height:70px">Finish with fewer</button>`}
+      <button class="print" id="spOk" ${enough && !spot.busy ? "" : "disabled"}>DONE</button></div>`;
+  $("#spCam").onclick = () => scanWithCamera((code) => spotScan(code.trim()));
+  $("#spOk").onclick = spotSampleDone;
+  if (!enough) $("#spFewer").onclick = () => overlay("Finish with fewer?", `${x.sample.length} of ${x.need} scanned. The report will say so.`, false, false, { label: "Finish", run: spotSampleDone });
+}
+
+function spotTotalDone() {
+  const x = spot.exp;
+  if (spot.count !== x.expected && spot.attempt === 1) {
+    spot = { ...spot, first: spot.count, attempt: 2, count: 0, msg: { tone: "bad", text: "That doesn't match what's recorded. Please count the boxes again carefully." } };
+    drawTake(); return;
+  }
+  x.totals = spot.first === null ? [spot.count] : [spot.first, spot.count];
+  x.phase = "sample"; spot.msg = null; drawTake(); poke();
+}
+
+async function spotSampleScan(sn) {
+  const x = spot.exp;
+  if (x.sample.some((v) => v.sn === sn)) { spot.msg = { tone: "bad", text: `${esc(sn)} already scanned.` }; drawTake(); return; }
+  if (x.more && x.prev.has(sn)) { spot.msg = { tone: "bad", text: `${esc(sn)} was checked last time: pick a different box.` }; drawTake(); return; }
+  let ok = x.serials.includes(sn), why = "";
+  if (!ok) {
+    const u = await S.lookupSerial(sn).catch(() => null);
+    why = !u ? "not booked in" : u.item_id !== spot.exp.forId ? `booked in as ${u.item_name}` : u.status === "dispatched" ? `recorded as sent on order ${u.order_number}` : `recorded as ${u.status}`;
+  }
+  x.sample.push({ sn, ok, why });
+  spot.msg = ok ? { tone: "good", text: `\u2713 ${esc(sn)} is on the system` } : { tone: "bad", text: `\u26a0 ${esc(sn)}: ${esc(why)}. Put it aside for a manager.` };
+  // Reached the number: if most were also scanned last time, ask for some different ones
+  if (x.sample.length >= x.need && !x.more && x.prev.size) {
+    const repeat = x.sample.filter((v) => x.prev.has(v.sn)).length;
+    if (repeat > x.need / 2) {
+      x.more = true; x.need += S.SPOT.sampleMore;
+      spot.msg = { tone: "bad", text: `Most of these were checked last time. Please scan ${S.SPOT.sampleMore} more <b>different</b> boxes.` };
+    }
+  }
+  drawTake(); poke();
+}
+
+async function spotSampleDone() {
+  if (spot.busy) return;
+  const id = spotCurrentId(), item = spotItem(id), x = spot.exp;
+  spot.busy = true; drawTake();
+  try {
+    const final = x.totals[x.totals.length - 1], diff = final - x.expected, cost = Number((x.item || item).unit_cost) || 0;
+    const flagged = x.sample.filter((v) => !v.ok);
+    await S.saveSpotResult(spot.check.id, id, {
+      name: item.name || "", sku: item.SKU || "", location: item.location || "", serial: true, sampled: true,
+      expected: x.expected, counts: x.totals, final, diff, unit_cost: cost, value: Math.round(diff * cost * 100) / 100,
+      missing: [], extra: flagged.map((v) => v.sn), extra_why: Object.fromEntries(flagged.map((v) => [v.sn, v.why])),
+      sample: x.sample.map((v) => v.sn), sample_target: x.need, sample_ok: x.sample.length - flagged.length, recount: x.totals.length > 1,
+    });
+    const ok = !diff && !flagged.length;
+    await spotAdvance(id, item, ok, diff, cost, [], flagged.map((v) => v.sn));
+  } catch (e) {
+    spot.busy = false; overlay("Couldn't save the count", friendlyError(e), true); drawTake();
+  }
+}
 
 function drawSpot(card) {
   const c = spot.check;
@@ -656,7 +754,7 @@ function drawSpot(card) {
     card.innerHTML = `<h2>Spot check finished</h2>
       <div class="spotres ${c.outcome}">${text}${c.over ? " Some items had more than recorded." : ""}</div>
       <div class="meta">${s.counted || 0} items counted · ${s.correct || 0} correct${s.short ? ` · ${s.short} short` : ""}${s.over ? ` · ${s.over} over` : ""}</div>
-      ${wrong.length ? `<div class="meta" style="line-height:1.6">${wrong.map((x) => `<b>${esc(x.name)}</b>: ${x.diff < 0 ? `${-x.diff} short` : x.diff > 0 ? `${x.diff} over` : "different units"}${(x.missing || []).length ? ` (missing ${x.missing.map(esc).join(", ")})` : ""}`).join("<br>")}</div>` : ""}
+      ${wrong.length ? `<div class="meta" style="line-height:1.6">${wrong.map((x) => `<b>${esc(x.name)}</b>: ${x.diff < 0 ? `${-x.diff} short` : x.diff > 0 ? `${x.diff} over` : `${(x.extra || []).length + (x.missing || []).length} serial problem${(x.extra || []).length + (x.missing || []).length === 1 ? "" : "s"}`}${(x.missing || []).length ? ` (missing ${x.missing.map(esc).join(", ")})` : ""}${(x.extra || []).length ? ` (${x.extra.map(esc).join(", ")}: put aside for a manager)` : ""}`).join("<br>")}</div>` : ""}
       <div class="takebtns"><button class="print" id="spDone">DONE</button></div>`;
     $("#spDone").onclick = () => { spot = { ...spot, check: null, msg: null }; takeMode = "take"; refreshSpotDue(); drawTake(); };
     return;
@@ -664,9 +762,17 @@ function drawSpot(card) {
   const id = spotCurrentId(), item = spotItem(id), serial = item.tracking_type === "serial";
   const main = c.item_ids.length, deep = (c.deep_item_ids || []).length;
   const pos = spotList().indexOf(id) + 1;
-  card.innerHTML = `<div class="meta">${pos <= main ? `Item ${pos} of ${main}` : `Deeper count: item ${pos - main} of ${deep}`}${spot.attempt === 2 ? " · <b style=\"color:#b3263a\">COUNT AGAIN</b>" : ""}</div>
+  const head = `<div class="meta">${pos <= main ? `Item ${pos} of ${main}` : `Deeper count: item ${pos - main} of ${deep}`}${spot.attempt === 2 ? " · <b style=\"color:#b3263a\">COUNT AGAIN</b>" : ""}</div>
     <h2>${esc(item.name || "")}</h2>
-    <div class="meta">SKU ${esc(item.SKU || "-")} · Location <b>${esc(item.location || "-")}</b></div>
+    <div class="meta">SKU ${esc(item.SKU || "-")} · Location <b>${esc(item.location || "-")}</b></div>`;
+  if (!spot.exp || spot.exp.forId !== id) {
+    card.innerHTML = `${head}<div class="meta">Loading\u2026</div>`;
+    if (!spot.exp || spot.exp.forId !== id) spotLoad(id);
+    return;
+  }
+  if (spot.exp.loading) { card.innerHTML = `${head}<div class="meta">Loading\u2026</div>`; return; }
+  if (spot.exp.sampled) { drawSampled(card, item, head); return; }
+  card.innerHTML = `${head}
     <div class="meta">${serial ? "Scan the serial number on every unit you can find." : "Scan each unit (or its shelf label once per unit), or use + / −."}</div>
     ${serial ? `<div class="spotcount">${spot.scanned.length}</div><div class="spotserials">${spot.scanned.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`
       : `<div class="counter"><button id="spMinus">&minus;</button><button class="num" id="spNum"><small>COUNTED</small><b>${spot.count}</b></button><button id="spPlus">+</button></div>`}
@@ -687,7 +793,7 @@ async function spotStart() {
     const st = await S.spotStatus(); spot.status = st;
     spot.check = st.open && st.open.status !== "requested" ? st.open : await S.startSpotCheck(st.open && st.open.status === "requested" ? st.open : null);
     if (!S.items.length) await S.refresh();
-    spot = { ...spot, count: 0, scanned: [], attempt: 1, first: null, msg: null };
+    spot = { ...spot, ...fresh() };
     hideOverlay(); refreshSpotDue();
   } catch (e) { overlay("Couldn't start the spot check", friendlyError(e), true); }
   drawTake();
@@ -696,6 +802,11 @@ async function spotStart() {
 function spotScan(code) {
   if (!spot.check || spot.check.status === "finished" || !code) return;
   const item = spotItem(spotCurrentId()), product = S.findByCode(code);
+  if (spot.exp && spot.exp.sampled && spot.exp.forId === item.id) {
+    if (product) { spot.msg = { tone: "bad", text: product.id === item.id ? (spot.exp.phase === "total" ? "Count the boxes and enter the number, then scan serials." : "That's the product barcode. Scan the serial number (S/N).") : `That's ${esc(product.name)}. This check is counting ${esc(item.name)}.` }; drawTake(); return; }
+    if (spot.exp.phase === "total") { spot.msg = { tone: "bad", text: "First count the boxes and press NEXT. Then scan serials." }; drawTake(); return; }
+    spotSampleScan(S.normaliseSerial(code)); return;
+  }
   if (item.tracking_type === "serial") {
     if (product) { spot.msg = { tone: "bad", text: product.id === item.id ? "That's the product barcode. Scan the serial number (S/N) on each unit." : `That's ${esc(product.name)}. This check is counting ${esc(item.name)}.` }; drawTake(); return; }
     const sn = S.normaliseSerial(code);
@@ -733,9 +844,20 @@ async function spotDone() {
       expected: exp.expected, counts: spot.first === null ? [counted] : [spot.first, counted], final: counted, diff,
       unit_cost: cost, value: Math.round(diff * cost * 100) / 100, missing, extra, recount: spot.attempt === 2,
     });
-    spot.check.results = { ...(spot.check.results || {}), [id]: { name: item.name, location: item.location, serial, diff, value: diff * cost, missing, extra } };
-    takeSession.unshift({ name: item.name, what: ok ? "Spot check: correct" : `Spot check: ${diff < 0 ? `${-diff} short` : diff > 0 ? `${diff} over` : "different units"} (counted twice)`, time: hhmm(), bad: !ok });
-    spot = { ...spot, count: 0, scanned: [], attempt: 1, first: null, msg: null, busy: false };
+    await spotAdvance(id, item, ok, diff, cost, missing, extra);
+    return;
+  } catch (e) {
+    spot.busy = false; overlay("Couldn't save the count", friendlyError(e), true);
+  }
+  drawTake();
+}
+
+/** After an item is saved: note it, then the next item, a deeper count, or finish. */
+async function spotAdvance(id, item, ok, diff, cost, missing, extra) {
+  try {
+    spot.check.results = { ...(spot.check.results || {}), [id]: { name: item.name, location: item.location, serial: item.tracking_type === "serial", diff, value: diff * cost, missing, extra } };
+    takeSession.unshift({ name: item.name, what: ok ? "Spot check: correct" : `Spot check: ${diff < 0 ? `${-diff} short` : diff > 0 ? `${diff} over` : `${extra.length} serial problem${extra.length === 1 ? "" : "s"}`}`, time: hhmm(), bad: !ok });
+    spot = { ...spot, ...fresh() };
     if (!spotCurrentId()) {
       const sev = S.spotSeverity(spot.check.results);
       if (sev.outcome === "red" && spot.check.status === "counting") {
