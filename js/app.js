@@ -35,6 +35,14 @@ let mode = "order", active = null, copies = 1, typing = false, caseMode = "Abc",
 const fields = () => MODES[mode].fields;
 const fieldOf = (k) => fields().find((f) => f.k === k);
 
+// Number boxes: select what's in them when tapped, so typing replaces the 0
+document.addEventListener("focusin", (e) => {
+  const el = e.target;
+  if (!el || el.tagName !== "INPUT" || el.type !== "number") return;
+  el.addEventListener("mouseup", (ev) => ev.preventDefault(), { once: true });
+  setTimeout(() => { try { if (document.activeElement === el) el.select(); } catch (err) {} }, 0);
+});
+
 /* ---------- settings (saved on this tablet) ---------- */
 // stockOrient: how stock labels sit on the label: "upright", or landscape turned "right" / "left"
 const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockOrient: "upright" };
