@@ -6,7 +6,7 @@ import {
   initializeApp, initializeAuth, indexedDBLocalPersistence, browserLocalPersistence,
   signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
   initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
-  query, where, getCountFromServer, serverTimestamp,
+  query, where, getCountFromServer, serverTimestamp, orderBy, limit,
 } from "./firebase.js";
 
 // Public web settings of the Payaz Stock app (the same values its website uses).
@@ -525,5 +525,123 @@ export const stock = {
       } catch (e) {}
     }
     return moved;
+  },
+
+  /* ---------- spot checks (small blind counts, Payaz Stock's spot_checks) ----------
+     Keep SPOT in step with Payaz Stock's src/lib/spotChecks.ts. */
+  SPOT: { items: 10, minSerial: 3, bigValue: 50, bigItems: 3, deep: 15, days: [1, 15] },
+
+  /** The most recent scheduled date (1st or 15th) up to today, at 00:00. */
+  lastScheduledDate(now = new Date()) {
+    const d = now.getDate(), day = [...this.SPOT.days].reverse().find((x) => x <= d);
+    return day ? new Date(now.getFullYear(), now.getMonth(), day) : new Date(now.getFullYear(), now.getMonth() - 1, this.SPOT.days[this.SPOT.days.length - 1]);
+  },
+
+  /** { open: a check requested or in progress (or null), due: true if one should be done now }. */
+  async spotStatus() {
+    init();
+    const col = collection(db, "spot_checks");
+    const open = await getDocs(query(col, where("status", "in", ["requested", "counting", "deep"]), limit(1)));
+    if (!open.empty) return { open: open.docs[0].data(), due: true };
+    const last = await getDocs(query(col, orderBy("created_at", "desc"), limit(1)));
+    const lastAt = last.empty ? "" : last.docs[0].data().created_at || "";
+    return { open: null, due: !lastAt || lastAt < this.lastScheduledDate().toISOString() };
+  },
+
+  /** Picks items to count: some serial-tracked (tablets, readers), the rest weighted
+   *  towards items not counted for a while or wrong last time. */
+  pickSpotItems(n, minSerial, exclude = [], preferLocations = []) {
+    const skip = new Set(exclude);
+    const pool = this.items.filter((i) => !i.is_discontinued && !skip.has(i.id) && ((Number(i.quantity_on_hand) || 0) > 0 || i.tracking_type === "serial"));
+    const now = Date.now();
+    const weight = (i) => {
+      const days = i.last_counted_at ? (now - new Date(i.last_counted_at).getTime()) / 864e5 : 60;
+      return 1 + Math.min(8, days / 7) + (i.last_count_diff ? 3 : 0) + (preferLocations.includes(i.location) ? 4 : 0) + Math.min(3, (Number(i.unit_cost) || 0) / 50);
+    };
+    const draw = (list, k) => {
+      const out = [], left = [...list];
+      while (out.length < k && left.length) {
+        const total = left.reduce((a, i) => a + weight(i), 0);
+        let r = Math.random() * total, idx = 0;
+        while (idx < left.length - 1 && (r -= weight(left[idx])) > 0) idx++;
+        out.push(left.splice(idx, 1)[0]);
+      }
+      return out;
+    };
+    const serial = draw(pool.filter((i) => i.tracking_type === "serial"), minSerial);
+    const rest = draw(pool.filter((i) => !serial.includes(i)), n - serial.length);
+    return [...serial, ...rest].map((i) => i.id);
+  },
+
+  /** Starts a spot check (or carries on a requested one). Returns the check. */
+  async startSpotCheck(requested) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    if (!this.items.length) await this.refresh();
+    const now = new Date().toISOString();
+    const item_ids = this.pickSpotItems(this.SPOT.items, this.SPOT.minSerial);
+    if (!item_ids.length) throw new Error("There's no stock to count yet.");
+    const id = requested ? requested.id : "spot_" + now.replace(/\D/g, "").slice(0, 14) + "_" + Math.random().toString(36).slice(2, 6);
+    const check = {
+      ...(requested || { id, reason: "scheduled", created_at: now }),
+      status: "counting", started_at: now, started_by_id: this.user.uid, started_by_name: this.userName,
+      item_ids, deep_item_ids: [], results: {}, updated_at: now,
+    };
+    const b = writeBatch(db);
+    if (requested) b.update(doc(db, "spot_checks", id), check); else b.set(doc(db, "spot_checks", id), check);
+    await b.commit();
+    return check;
+  },
+
+  /** What the system expects for an item right now (read fresh): quantity, and for a
+   *  serial-tracked item the serials in stock. */
+  async spotExpected(itemId) {
+    init();
+    const snap = await getDoc(doc(db, "items", itemId));
+    const item = snap.exists() ? { id: snap.id, ...snap.data() } : this.items.find((i) => i.id === itemId);
+    if (item && item.tracking_type === "serial") {
+      const q = await getDocs(query(collection(db, "serial_units"), where("item_id", "==", itemId), where("status", "==", "in_stock")));
+      const serials = q.docs.map((d) => d.data().serial_number);
+      return { item, expected: serials.length, serials };
+    }
+    return { item, expected: Number(item && item.quantity_on_hand) || 0, serials: null };
+  },
+
+  /** Saves one item's result on the check, and when it was last counted on the item. */
+  async saveSpotResult(checkId, itemId, result) {
+    init();
+    const b = writeBatch(db), now = new Date().toISOString();
+    b.update(doc(db, "spot_checks", checkId), { [`results.${itemId}`]: { ...result, at: now, by_id: this.user.uid, by_name: this.userName }, updated_at: now });
+    b.update(doc(db, "items", itemId), { last_counted_at: now, last_count_diff: result.diff || 0 });
+    await b.commit();
+  },
+
+  /** Big difference: any serial-tracked item short, or over £bigValue, or bigItems or more items wrong. */
+  spotSeverity(results) {
+    const r = Object.values(results);
+    // A serial-tracked item is also wrong if a unit is missing or one that isn't booked in turned up
+    const bad = (x) => x.diff || (x.missing && x.missing.length) || (x.extra && x.extra.length);
+    const wrong = r.filter(bad), short = wrong.filter((x) => x.diff < 0 || (x.missing && x.missing.length)), over = wrong.filter((x) => x.diff > 0 || (x.extra && x.extra.length));
+    const valueOff = wrong.reduce((a, x) => a + Math.abs(x.value || 0), 0);
+    const big = short.some((x) => x.serial) || valueOff > this.SPOT.bigValue || wrong.length >= this.SPOT.bigItems;
+    return { outcome: !wrong.length ? "green" : big ? "red" : "amber", over: over.length > 0, wrong: wrong.length, short: short.length, overCount: over.length, valueOff, counted: r.length };
+  },
+
+  /** Adds a deeper count: more items, favouring the locations where differences were found. */
+  async addDeepCount(check) {
+    const wrongLocs = Object.values(check.results).filter((x) => x.diff).map((x) => x.location);
+    const deep = this.pickSpotItems(this.SPOT.deep, this.SPOT.minSerial, [...check.item_ids], wrongLocs);
+    const now = new Date().toISOString(), b = writeBatch(db);
+    b.update(doc(db, "spot_checks", check.id), { status: "deep", deep_item_ids: deep, updated_at: now });
+    await b.commit();
+    return { ...check, status: "deep", deep_item_ids: deep };
+  },
+
+  async finishSpotCheck(check) {
+    const sev = this.spotSeverity(check.results), now = new Date().toISOString(), b = writeBatch(db);
+    const summary = { counted: sev.counted, correct: sev.counted - sev.wrong, short: sev.short, over: sev.overCount, value_off: Math.round(sev.valueOff * 100) / 100 };
+    b.update(doc(db, "spot_checks", check.id), { status: "finished", finished_at: now, finished_by_name: this.userName, outcome: sev.outcome, over: sev.over, summary, updated_at: now });
+    await b.commit();
+    return { ...check, status: "finished", outcome: sev.outcome, over: sev.over, summary };
   },
 };

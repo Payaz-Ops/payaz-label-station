@@ -500,7 +500,7 @@ $("#goLog").onclick = openLog;
 /* ---------- stock (linked to the Payaz Stock app) ---------- */
 let stockSearch = "", stockReady = false, sheetItem = null, sheetCopies = 1;
 let stockView = "take", pickForTake = false; // "take" = Stock button, "labels" = Stock Label button
-S.watch(() => { stockReady = true; if ($("#stock").classList.contains("on")) openStock(); });
+S.watch(() => { stockReady = true; if ($("#stock").classList.contains("on")) openStock(); refreshSpotDue(); });
 
 async function openStock(view = stockView) {
   stockView = view;
@@ -616,6 +616,143 @@ $("#stNew").onclick = () => openNewItem({});
 $("#stCustom").onclick = () => openMode("stock");
 $("#stCustom2").onclick = () => openMode("stock");
 
+/* ---------- spot check: a small blind count (Payaz Stock's spot checks) ---------- */
+// The counter is never shown what the system expects. A count that doesn't match is
+// counted again; a big difference adds a deeper count; managers see the results in
+// Payaz Stock and decide what to do about differences.
+let spot = { check: null, count: 0, scanned: [], attempt: 1, first: null, msg: null, busy: false, status: null };
+const spotList = () => spot.check ? [...spot.check.item_ids, ...(spot.check.deep_item_ids || [])] : [];
+const spotCurrentId = () => spotList().find((id) => !(spot.check.results || {})[id]);
+const spotItem = (id) => S.items.find((i) => i.id === id) || { id, name: "(item no longer in stock app)" };
+
+async function refreshSpotDue() {
+  if (!(S.user && S.isStaff && S.spotStatus)) { $("#spotBtn").style.display = "none"; return; }
+  try { spot.status = await S.spotStatus(); } catch (e) { spot.status = null; }
+  $("#spotBtn").style.display = spot.status && spot.status.due ? "" : "none";
+  $("#spotBtn").textContent = spot.status && spot.status.open && spot.status.open.status !== "requested" ? "Finish the spot check" : "Spot check due";
+}
+$("#spotBtn").onclick = async () => {
+  pickForTake = false; await openStock("take");
+  if (takeItem && !(await takeSave(true))) return;
+  takeMode = "spot"; drawTake();
+};
+
+function drawSpot(card) {
+  const c = spot.check;
+  if (!c) {
+    const st = spot.status, open = st && st.open;
+    card.innerHTML = `<h2>Spot check</h2>
+      <div class="meta" style="line-height:1.5">A quick count of about ${S.SPOT.items} items picked at random, including some tablets and card readers.
+      You won't be shown how many there should be: just count what's there. If a count doesn't match, you'll be asked to count it again.</div>
+      <div class="bookmsg ${st && st.due ? "bad" : ""}">${open ? (open.status === "requested" ? `Requested by ${esc(open.requested_by_name || "a manager")}.` : `Started by ${esc(open.started_by_name || "")}: carry on where it was left.`) : st && st.due ? "A spot check is due (1st and 15th of the month)." : "Not due yet: you can still do one."}</div>
+      <div class="takebtns"><button class="print" id="spStart">${open && open.status !== "requested" ? "CARRY ON" : "START SPOT CHECK"}</button></div>`;
+    $("#spStart").onclick = spotStart;
+    return;
+  }
+  if (c.status === "finished") {
+    const s = c.summary || {};
+    const text = c.outcome === "green" ? "✓ All correct. Thank you!" : c.outcome === "amber" ? "Small differences found. Managers have been told." : "Big differences found. Managers have been told.";
+    const wrong = spotList().map((id) => c.results[id]).filter((x) => x && (x.diff || (x.missing || []).length || (x.extra || []).length));
+    card.innerHTML = `<h2>Spot check finished</h2>
+      <div class="spotres ${c.outcome}">${text}${c.over ? " Some items had more than recorded." : ""}</div>
+      <div class="meta">${s.counted || 0} items counted · ${s.correct || 0} correct${s.short ? ` · ${s.short} short` : ""}${s.over ? ` · ${s.over} over` : ""}</div>
+      ${wrong.length ? `<div class="meta" style="line-height:1.6">${wrong.map((x) => `<b>${esc(x.name)}</b>: ${x.diff < 0 ? `${-x.diff} short` : x.diff > 0 ? `${x.diff} over` : "different units"}${(x.missing || []).length ? ` (missing ${x.missing.map(esc).join(", ")})` : ""}`).join("<br>")}</div>` : ""}
+      <div class="takebtns"><button class="print" id="spDone">DONE</button></div>`;
+    $("#spDone").onclick = () => { spot = { ...spot, check: null, msg: null }; takeMode = "take"; refreshSpotDue(); drawTake(); };
+    return;
+  }
+  const id = spotCurrentId(), item = spotItem(id), serial = item.tracking_type === "serial";
+  const main = c.item_ids.length, deep = (c.deep_item_ids || []).length;
+  const pos = spotList().indexOf(id) + 1;
+  card.innerHTML = `<div class="meta">${pos <= main ? `Item ${pos} of ${main}` : `Deeper count: item ${pos - main} of ${deep}`}${spot.attempt === 2 ? " · <b style=\"color:#b3263a\">COUNT AGAIN</b>" : ""}</div>
+    <h2>${esc(item.name || "")}</h2>
+    <div class="meta">SKU ${esc(item.SKU || "-")} · Location <b>${esc(item.location || "-")}</b></div>
+    <div class="meta">${serial ? "Scan the serial number on every unit you can find." : "Scan each unit (or its shelf label once per unit), or use + / −."}</div>
+    ${serial ? `<div class="spotcount">${spot.scanned.length}</div><div class="spotserials">${spot.scanned.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`
+      : `<div class="counter"><button id="spMinus">&minus;</button><button class="num" id="spNum"><small>COUNTED</small><b>${spot.count}</b></button><button id="spPlus">+</button></div>`}
+    ${spot.msg ? `<div class="bookmsg ${spot.msg.tone}">${spot.msg.text}</div>` : ""}
+    <div class="takebtns"><button class="ghost cam" id="spCam" style="min-height:70px">&#128247; Camera</button><button class="print" id="spOk" ${spot.busy ? "disabled" : ""}>DONE COUNTING</button></div>`;
+  if (!serial) {
+    $("#spMinus").onclick = () => { spot.count = Math.max(0, spot.count - 1); drawTake(); poke(); };
+    $("#spPlus").onclick = () => { spot.count++; drawTake(); poke(); };
+    $("#spNum").onclick = () => { searchTarget = "spot"; drawTyper(); $("#typer").classList.add("on"); };
+  }
+  $("#spCam").onclick = () => scanWithCamera((code) => spotScan(code.trim()));
+  $("#spOk").onclick = spotDone;
+}
+
+async function spotStart() {
+  overlay("Starting the spot check…", "", false, true);
+  try {
+    const st = await S.spotStatus(); spot.status = st;
+    spot.check = st.open && st.open.status !== "requested" ? st.open : await S.startSpotCheck(st.open && st.open.status === "requested" ? st.open : null);
+    if (!S.items.length) await S.refresh();
+    spot = { ...spot, count: 0, scanned: [], attempt: 1, first: null, msg: null };
+    hideOverlay(); refreshSpotDue();
+  } catch (e) { overlay("Couldn't start the spot check", friendlyError(e), true); }
+  drawTake();
+}
+
+function spotScan(code) {
+  if (!spot.check || spot.check.status === "finished" || !code) return;
+  const item = spotItem(spotCurrentId()), product = S.findByCode(code);
+  if (item.tracking_type === "serial") {
+    if (product) { spot.msg = { tone: "bad", text: product.id === item.id ? "That's the product barcode. Scan the serial number (S/N) on each unit." : `That's ${esc(product.name)}. This check is counting ${esc(item.name)}.` }; drawTake(); return; }
+    const sn = S.normaliseSerial(code);
+    if (spot.scanned.includes(sn)) { spot.msg = { tone: "bad", text: `${esc(sn)} already scanned.` }; drawTake(); return; }
+    spot.scanned.push(sn); spot.msg = { tone: "good", text: `✓ ${esc(sn)}` };
+  } else if (product && product.id === item.id) {
+    spot.count++; spot.msg = null;
+  } else {
+    spot.msg = { tone: "bad", text: product ? `That's ${esc(product.name)}. This check is counting ${esc(item.name)}.` : `${esc(code)} isn't this item's barcode.` };
+  }
+  drawTake(); poke();
+}
+
+async function spotDone() {
+  if (spot.busy) return;
+  const id = spotCurrentId(), item = spotItem(id), serial = item.tracking_type === "serial";
+  spot.busy = true; drawTake();
+  try {
+    const exp = await S.spotExpected(id);
+    let counted, missing = [], extra = [];
+    if (serial) {
+      counted = spot.scanned.length;
+      missing = exp.serials.filter((x) => !spot.scanned.includes(x));
+      extra = spot.scanned.filter((x) => !exp.serials.includes(x));
+    } else counted = spot.count;
+    const ok = serial ? !missing.length && !extra.length : counted === exp.expected;
+    if (!ok && spot.attempt === 1) {
+      // Count again, without saying by how much it was out
+      spot = { ...spot, first: counted, attempt: 2, count: 0, scanned: [], busy: false, msg: { tone: "bad", text: "That doesn't match what's recorded. Please count it again carefully." } };
+      drawTake(); return;
+    }
+    const cost = Number((exp.item || item).unit_cost) || 0, diff = counted - exp.expected;
+    await S.saveSpotResult(spot.check.id, id, {
+      name: item.name || "", sku: item.SKU || "", location: item.location || "", serial,
+      expected: exp.expected, counts: spot.first === null ? [counted] : [spot.first, counted], final: counted, diff,
+      unit_cost: cost, value: Math.round(diff * cost * 100) / 100, missing, extra, recount: spot.attempt === 2,
+    });
+    spot.check.results = { ...(spot.check.results || {}), [id]: { name: item.name, location: item.location, serial, diff, value: diff * cost, missing, extra } };
+    takeSession.unshift({ name: item.name, what: ok ? "Spot check: correct" : `Spot check: ${diff < 0 ? `${-diff} short` : diff > 0 ? `${diff} over` : "different units"} (counted twice)`, time: hhmm(), bad: !ok });
+    spot = { ...spot, count: 0, scanned: [], attempt: 1, first: null, msg: null, busy: false };
+    if (!spotCurrentId()) {
+      const sev = S.spotSeverity(spot.check.results);
+      if (sev.outcome === "red" && spot.check.status === "counting") {
+        spot.check = await S.addDeepCount(spot.check);
+        spot.msg = { tone: "bad", text: `Big difference found. Please count ${spot.check.deep_item_ids.length} more items.` };
+      }
+      if (!spotCurrentId()) {
+        spot.check = await S.finishSpotCheck(spot.check);
+        refreshSpotDue();
+      }
+    }
+  } catch (e) {
+    spot.busy = false; overlay("Couldn't save the count", friendlyError(e), true);
+  }
+  drawTake();
+}
+
 /* ---------- stock take (Stock button) ---------- */
 // Same as the stock app's Stock Take / Add Stock / Remove Stock scan modes:
 // each scan of the item counts 1; the result is saved with the same history text.
@@ -625,6 +762,7 @@ const MODE_TEXT = {
   take: { name: "Stock take", counter: "COUNTED", hint: "Scan every unit of an item: each scan counts 1. Scanning the next item saves this one." },
   add: { name: "Add stock", counter: "ADDING", hint: "Scan each unit you're putting into stock." },
   remove: { name: "Remove stock", counter: "REMOVING", hint: "Scan each unit you're taking out of stock." },
+  spot: { name: "Spot check", hint: "" },
   bookin: { name: "Book in serials", hint: "Scan the product barcode (or its shelf label), or tap Find an item. Then scan the serial number on each unit." },
 };
 const recorded = (i) => Number(i.quantity_on_hand) || 0;
@@ -635,7 +773,8 @@ function takeResult() {
 function drawTake() {
   document.querySelectorAll("#takeModes button").forEach((b) => b.classList.toggle("on", b.dataset.m === takeMode));
   const M = MODE_TEXT[takeMode], card = $("#takeCard");
-  if (takeMode === "bookin" && bookItem) drawBookIn(card);
+  if (takeMode === "spot") drawSpot(card);
+  else if (takeMode === "bookin" && bookItem) drawBookIn(card);
   else if (!takeItem) {
     card.innerHTML = `<div class="scanwait"><div class="beam"></div><h2>Scan an item or its shelf label</h2>
       <p style="margin:0;color:var(--muted);font-size:17px">${M.hint}</p>
@@ -784,6 +923,7 @@ function bookScan(code) {
 
 async function takeScan(code) {
   if (takeMode === "bookin") { bookScan(code); return; }
+  if (takeMode === "spot") { spotScan(code); return; }
   if (!code || takeBusy) return;
   const found = await S.findItemOrSerial(code);
   const item = found && found.item;
@@ -998,10 +1138,11 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
   if (searchTarget === "serial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
   if (searchTarget === "location") { locTyped = v.slice(0, 60); return; }
+  if (searchTarget === "spot") { spot.count = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
   if (searchTarget === "bookref") { bookRef = v.toUpperCase().slice(0, 60); drawTake(); return; }
   if (searchTarget === "count") { takeCount = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
   return searchTarget === "stock" ? setStockSearch(v) : setSearch(v);

@@ -28,6 +28,12 @@ header { height: 72px; background: var(--grad); display: flex; align-items: cent
 header img { height: 44px; }
 header .title { font-weight: 700; font-size: 24px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; min-width: 52px; padding: 0 18px; font-weight: 700; font-size: 20px; white-space: nowrap; }
+.spotdue { background: #ff9f1c; color: #1f1a5c; border-radius: 99px; height: 48px; padding: 0 18px; font-weight: 900; font-size: 16px; white-space: nowrap; box-shadow: 0 0 0 3px rgba(255,255,255,.5); }
+.spotcount { font-size: 64px; font-weight: 900; text-align: center; line-height: 1; }
+.spotserials { display: flex; flex-wrap: wrap; gap: 6px; max-height: 90px; overflow-y: auto; }
+.spotserials span { background: #e3f6f7; border-radius: 8px; padding: 4px 8px; font-weight: 700; font-size: 14px; }
+.spotres { font-size: 20px; font-weight: 900; padding: 14px 16px; border-radius: var(--r); }
+.spotres.green { background: #e7f4dc; color: #2f6b12; } .spotres.amber { background: #fff2d6; color: #8a5a00; } .spotres.red { background: #fde7e9; color: #b3263a; }
 .pill { background: rgba(255,255,255,.22); color: #fff; border-radius: 99px; height: 48px; padding: 0 18px; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .pill::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: #ccc; }
 .pill.ok::before { background: #b9ff7a; box-shadow: 0 0 6px #b9ff7a; }
@@ -237,6 +243,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 <header>
   <img src="img/logo-white.png" alt="Payaz">
   <div class="title" id="hdrTitle">Label Station</div>
+  <button class="spotdue" id="spotBtn" style="display:none">Spot check due</button>
   <button class="pill bad" id="pill">Connect printer</button>
   <button class="icon-btn" id="backBtn" style="display:none">&#8592; Back</button>
   <button class="icon-btn" id="setBtn">&#9881; Settings</button>
@@ -306,7 +313,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   </div>
   <div id="takeMain" style="display:none">
     <div class="takeleft">
-      <div class="seg modes" id="takeModes"><button data-m="take" class="on">Stock take</button><button data-m="add">Add stock</button><button data-m="remove">Remove stock</button><button data-m="bookin">Book in serials</button></div>
+      <div class="seg modes" id="takeModes"><button data-m="take" class="on">Stock take</button><button data-m="add">Add stock</button><button data-m="remove">Remove stock</button><button data-m="bookin">Book in serials</button><button data-m="spot">Spot check</button></div>
       <div class="takecard" id="takeCard"></div>
     </div>
     <div class="takeright">
