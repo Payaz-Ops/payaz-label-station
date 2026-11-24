@@ -61,14 +61,21 @@ export function code128Modules(text) {
   return out;
 }
 
+// Width of each bar unit in printer dots on the last label drawn (1 = very thin:
+// thermal ink spread can close the gaps, so it may not scan).
+let lastBarModule = 0;
+
 // Widest whole-dot bar width that fits, with a quiet zone. Draws on ctx (black).
 function drawBarcode(ctx, text, x0, y0, x1, y1) {
   const mods = code128Modules(text);
   let quiet = 10;
   const avail = x1 - x0;
   let m = Math.floor(avail / (mods.length + 2 * quiet));
+  // A smaller (still scannable) quiet zone if that keeps bars 2 dots wide
+  if (m < 2 && Math.floor(avail / (mods.length + 12)) >= 2) { quiet = 6; m = Math.floor(avail / (mods.length + 2 * quiet)); }
   if (m < 1) { quiet = 4; m = Math.floor(avail / (mods.length + 2 * quiet)); }
   if (m < 1) return false;
+  lastBarModule = lastBarModule ? Math.min(lastBarModule, m) : m;
   m = Math.min(m, 4);
   const width = mods.length * m;
   const left = x0 + Math.floor((avail - width) / 2);
@@ -280,8 +287,11 @@ export function formatDate(d = new Date()) {
  * Returns { canvas, bitmap } - canvas is the 1-bit preview, bitmap is
  * { width, height, data } with 1 = black dot, ready for the printer.
  */
-export function renderLabel(kind, values, { widthMm = 40, heightMm = 30, rotate = false, when, stockCode = "barcode" } = {}) {
-  const W = Math.round(widthMm * DPMM), H = Math.round(heightMm * DPMM);
+// landscape: draw the label sideways (heightMm wide, widthMm tall), e.g. a stock
+// label across a 50 x 80 mm label, then turn it a quarter turn for the printer.
+export function renderLabel(kind, values, { widthMm = 40, heightMm = 30, rotate = false, when, stockCode = "barcode", landscape = false } = {}) {
+  const W = Math.round((landscape ? heightMm : widthMm) * DPMM), H = Math.round((landscape ? widthMm : heightMm) * DPMM);
+  lastBarModule = 0;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
@@ -307,11 +317,19 @@ export function renderLabel(kind, values, { widthMm = 40, heightMm = 30, rotate 
     const g = img.data[i * 4] * 0.3 + img.data[i * 4 + 1] * 0.59 + img.data[i * 4 + 2] * 0.11;
     data[i] = g < 140 ? 1 : 0;
   }
-  if (rotate) data.reverse();
+  // The preview shows the label as drawn
   for (let i = 0; i < W * H; i++) {
     const v = data[i] ? 0 : 255;
     img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
-  return { canvas, bitmap: { width: W, height: H, data } };
+  // The printer gets it the way the label comes out (across the print head)
+  let out = data, outW = W, outH = H;
+  if (landscape) {
+    outW = H; outH = W; out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) out[x * outW + (H - 1 - y)] = data[y * W + x];
+  }
+  if (rotate) out.reverse();
+  // thinBars: a barcode had to be drawn with 1-dot bars, which may smudge together
+  return { canvas, bitmap: { width: outW, height: outH, data: out }, thinBars: lastBarModule === 1 };
 }

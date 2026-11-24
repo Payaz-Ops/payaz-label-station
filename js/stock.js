@@ -6,6 +6,7 @@ import {
   initializeApp, initializeAuth, indexedDBLocalPersistence, browserLocalPersistence,
   signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
   initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
+  query, where, getCountFromServer,
 } from "./firebase.js";
 
 // Public web settings of the Payaz Stock app (the same values its website uses).
@@ -373,6 +374,13 @@ export const stock = {
     const who = { id: this.user.uid, name: this.userName };
     const unitRef = doc(db, "serial_units", key), itemRef = doc(db, "items", itemId);
     ref = String(ref || "").trim().slice(0, 60);
+    // Already on the shelf: if the serials in stock would go above the stock count,
+    // the count goes up to match (it was too low). Count them before saving.
+    let inStockBefore = 0;
+    if (mode === "shelf") {
+      const agg = await getCountFromServer(query(collection(db, "serial_units"), where("item_id", "==", itemId), where("status", "==", "in_stock")));
+      inStockBefore = agg.data().count;
+    }
     let result;
     await runTransaction(db, async (tx) => {
       const existing = await tx.get(unitRef);
@@ -388,9 +396,10 @@ export const stock = {
       };
       if (ref) unit.received_ref = ref;
       tx.set(unitRef, unit);
-      let newQty = Number(item.quantity_on_hand) || 0;
-      if (unit.received_mode === "delivery") {
-        const oldQty = newQty; newQty = oldQty + 1;
+      let newQty = Number(item.quantity_on_hand) || 0, raised = false;
+      const shelfOver = unit.received_mode === "shelf" && inStockBefore + 1 > newQty;
+      if (unit.received_mode === "delivery" || shelfOver) {
+        const oldQty = newQty; newQty = oldQty + 1; raised = shelfOver;
         const movId = rid("mov");
         // last_serial_key: the database rules check this serial changed in the same save
         tx.update(itemRef, { quantity_on_hand: newQty, tracking_type: "serial", last_serial_key: key, updated_at: now });
@@ -399,7 +408,7 @@ export const stock = {
           serial_number: serial, direction: "in", quantity_delta: 1,
           location_from: "External", location_to: item.location,
           user_id: who.id, user_name: who.name,
-          reason: `[Serial booked in${ref ? `: ${ref}` : ""}] ${serial} (Old: ${oldQty} → New: ${newQty})`, source: "scan",
+          reason: `[Serial booked in${shelfOver ? ": on the shelf, more serials than the count" : ref ? `: ${ref}` : ""}] ${serial} (Old: ${oldQty} → New: ${newQty})`, source: "scan",
         });
       } else if (item.tracking_type !== "serial") {
         tx.update(itemRef, { tracking_type: "serial", updated_at: now });
@@ -407,14 +416,14 @@ export const stock = {
       const id = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const e = {
         id, serial_key: key, serial_number: serial, type: "received", item_id: item.id, item_name: item.name,
-        note: unit.received_mode === "delivery" ? "New delivery: added to stock" : "Already on the shelf: stock count unchanged",
+        note: unit.received_mode === "delivery" ? "New delivery: added to stock" : shelfOver ? "Already on the shelf: more serials than the stock count, so the count went up by 1" : "Already on the shelf: stock count unchanged",
         user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now,
       };
       if (ref) e.ref = ref;
       tx.set(doc(db, "serial_events", id), e);
       const i = this.items.findIndex((x) => x.id === item.id);
       if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: newQty, tracking_type: "serial", updated_at: now };
-      result = { kind: "added", unit, newQty };
+      result = { kind: "added", unit, newQty, raised };
     });
     return result;
   },

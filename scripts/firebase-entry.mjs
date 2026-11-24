@@ -6,4 +6,5 @@ export {
 } from "firebase/auth";
 export {
   initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
+  query, where, getCountFromServer,
 } from "firebase/firestore";

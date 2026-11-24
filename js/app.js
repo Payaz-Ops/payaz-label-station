@@ -36,7 +36,7 @@ const fields = () => MODES[mode].fields;
 const fieldOf = (k) => fields().find((f) => f.k === k);
 
 /* ---------- settings (saved on this tablet) ---------- */
-const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode" };
+const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockLandscape: false };
 let settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem("payaz-settings") || "{}")); } catch (e) {}
 function saveSettings(change) {
@@ -84,8 +84,17 @@ function setActive(k) {
 }
 
 /* ---------- drawing ---------- */
+// Under a preview: the code is too long for this label, so its bars are 1 dot wide
+function thinWarning(thin) {
+  if (!thin) return [];
+  const p = document.createElement("div");
+  p.className = "thinwarn";
+  p.textContent = "Code too long for this label: the barcode lines will be very thin and may smudge together. Use a wider label (50 mm, or 50 × 80 landscape), a shorter code, or QR codes in Settings.";
+  return [p];
+}
 function makeLabel(kind, values) {
-  return renderLabel(kind, values, { widthMm: settings.widthMm, heightMm: settings.heightMm, rotate: settings.rotate, stockCode: settings.stockCode });
+  return renderLabel(kind, values, { widthMm: settings.widthMm, heightMm: settings.heightMm, rotate: settings.rotate, stockCode: settings.stockCode,
+    landscape: kind === "stock" && !!settings.stockLandscape });
 }
 let prevTimer;
 function render() {
@@ -114,8 +123,8 @@ function render() {
   $("#hdrTitle").textContent = mode === "stock" ? "Stock Label" : printKind() === "all" ? "Order Label (combined)" : "Order Label";
   clearTimeout(prevTimer);
   prevTimer = setTimeout(() => {
-    const { canvas } = makeLabel(printKind(), vals);
-    $("#preview").replaceChildren(canvas);
+    const { canvas, thinBars } = makeLabel(printKind(), vals);
+    $("#preview").replaceChildren(canvas, ...thinWarning(thinBars));
   }, 60);
 }
 
@@ -437,22 +446,26 @@ function hideOverlay() { $("#overlay").classList.remove("on"); }
 $("#ovBtn").onclick = hideOverlay;
 
 /* ---------- settings screen ---------- */
-const PRESETS = [[40, 30], [40, 40], [40, 60], [50, 30], [50, 50]];
+const PRESETS = [[40, 30], [40, 40], [40, 60], [50, 30], [50, 50], [50, 80]];
 function openSettings() { $("#hdrTitle").textContent = "Settings"; show("settings"); drawSettings(); drawPrinter(); }
 function drawSettings() {
   $("#wmm").textContent = settings.widthMm + " mm";
   $("#hmm").textContent = settings.heightMm + " mm";
   $("#dens").textContent = settings.density;
   $("#rotVal").textContent = settings.rotate ? "ON" : "OFF";
+  $("#landVal").textContent = settings.stockLandscape ? "ON" : "OFF";
   document.querySelectorAll("[data-sc]").forEach((b) => b.classList.toggle("on", b.dataset.sc === settings.stockCode));
   $("#sizeChips").innerHTML = PRESETS.map(([w, h]) =>
     `<button class="chip ${w == settings.widthMm && h == settings.heightMm ? "on" : ""}" data-w="${w}" data-h="${h}">${w} × ${h} mm</button>`).join("");
-  $("#sizeChips").querySelectorAll("button").forEach((b) => (b.onclick = () => saveSettings({ widthMm: +b.dataset.w, heightMm: +b.dataset.h })));
+  // 50 x 80 mm: stock labels print landscape (across the label); other sizes upright
+  $("#sizeChips").querySelectorAll("button").forEach((b) => (b.onclick = () =>
+    saveSettings({ widthMm: +b.dataset.w, heightMm: +b.dataset.h, stockLandscape: +b.dataset.w === 50 && +b.dataset.h === 80 })));
 }
 document.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => {
   const [k, d] = b.dataset.d.split(":"); saveSettings({ [k]: +settings[k] + +d });
 }));
 $("#rotBtn").onclick = () => saveSettings({ rotate: !settings.rotate });
+$("#landBtn").onclick = () => saveSettings({ stockLandscape: !settings.stockLandscape });
 document.querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => saveSettings({ stockCode: b.dataset.sc })));
 $("#reloadBtn").onclick = () => location.reload();
 
@@ -534,7 +547,8 @@ function openSheet(item) {
 }
 function drawSheet() {
   $("#shCopies").textContent = sheetCopies;
-  $("#shPrev").replaceChildren(makeLabel("stock", stockLabelValues(sheetItem)).canvas);
+  const lbl = makeLabel("stock", stockLabelValues(sheetItem));
+  $("#shPrev").replaceChildren(lbl.canvas, ...thinWarning(lbl.thinBars));
 }
 const closeSheet = () => $("#sheet").classList.remove("on");
 $("#shClose").onclick = closeSheet;
@@ -636,7 +650,7 @@ function drawBookIn(card) {
   card.innerHTML = `<h2>${esc(item.name || "(no name)")}</h2>
     <div class="meta">SKU ${esc(item.SKU || "-")} · In stock now: <b>${recorded(item)}</b> · Booked in this time: <b>${bookCount}</b></div>
     <div class="seg" id="bkMode"><button data-v="delivery" class="${bookMode === "delivery" ? "on" : ""}">New delivery<br><small style="font-weight:500">each scan adds 1 to stock</small></button>` +
-    `<button data-v="shelf" class="${bookMode === "shelf" ? "on" : ""}">Already on the shelf<br><small style="font-weight:500">already counted, stock stays the same</small></button></div>
+    `<button data-v="shelf" class="${bookMode === "shelf" ? "on" : ""}">Already on the shelf<br><small style="font-weight:500">count stays the same, unless you scan more than it shows</small></button></div>
     ${bookMode === "delivery" ? `<button class="field" id="bkRef" style="padding:8px 14px"><div class="lbl">Delivery note or order reference (optional)</div>` +
       `<div class="val${bookRef ? "" : " empty"}" style="font-size:22px">${bookRef ? esc(bookRef) : "Tap to type it, e.g. PO 1043"}</div></button>` : ""}
     <div class="bookmsg ${bookMsg ? bookMsg.tone : ""}" id="bkMsg">${bookMsg ? bookMsg.text : ""}</div>
@@ -671,7 +685,7 @@ function bookScan(code) {
       const r = await S.bookInSerial(item.id, serial, mode, ref);
       if (r.kind === "added") {
         if (bookItem && bookItem.id === item.id) bookCount++;
-        bookNote("good", `\u2713 <b>${esc(serial)}</b> booked in${mode === "delivery" ? `, stock now ${r.newQty}` : ""}`,
+        bookNote("good", `\u2713 <b>${esc(serial)}</b> booked in${mode === "delivery" ? `, stock now ${r.newQty}` : r.raised ? `. More serials than the stock count, so the count went up to ${r.newQty}` : ""}`,
           serial, `Booked in: ${item.name}${mode === "delivery" ? ` (new delivery${ref ? `, ${ref}` : ""})` : " (already on the shelf)"}`);
       } else if (r.kind === "exists") {
         const u = r.unit, when = shortDate(u.received_at);
