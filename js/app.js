@@ -269,6 +269,7 @@ function keyInput(e, { onScan, onType, onDelete }) {
 document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return; // typing in a real text box
   if ($("#typer").classList.contains("on")) return;
+  if ($("#locPick").classList.contains("on")) return; // choosing a location
   if ($("#stock").classList.contains("on") && $("#takeMain").style.display !== "none") {
     keyInput(e, { onScan: (c) => takeScan(c.trim()), onType: (c) => { if (c.trim().length >= 4) takeScan(c.trim()); }, onDelete: () => {} });
     return;
@@ -610,7 +611,7 @@ $("#stCustom2").onclick = () => openMode("stock");
 /* ---------- stock take (Stock button) ---------- */
 // Same as the stock app's Stock Take / Add Stock / Remove Stock scan modes:
 // each scan of the item counts 1; the result is saved with the same history text.
-let takeMode = "take", takeItem = null, takeCount = 0, takeBusy = false;
+let takeMode = "take", takeItem = null, takeCount = 0, takeBusy = false, takeLoc = "";
 const takeSession = [];
 const MODE_TEXT = {
   take: { name: "Stock take", counter: "COUNTED", hint: "Scan every unit of an item: each scan counts 1. Scanning the next item saves this one." },
@@ -635,7 +636,8 @@ function drawTake() {
   } else {
     const old = recorded(takeItem), res = takeResult(), diff = res - old;
     card.innerHTML = `<h2>${esc(takeItem.name || "(no name)")}</h2>
-      <div class="meta">SKU ${esc(takeItem.SKU || "-")} · ${esc(takeItem.location || "no location")} · In stock now: <b>${old}</b></div>
+      <div class="meta">SKU ${esc(takeItem.SKU || "-")} · In stock now: <b>${old}</b></div>
+      <button class="locbtn${takeLoc !== (takeItem.location || "") ? " moved" : ""}" id="tkLoc">&#128205; Location: <b>${esc(takeLoc || "none")}</b>${takeLoc !== (takeItem.location || "") ? ` (moves from ${esc(takeItem.location || "none")} when saved)` : " · tap to change"}</button>
       <div class="counter"><button id="tkMinus">&minus;</button><button class="num" id="tkNum"><small>${M.counter}</small><b>${takeCount}</b></button><button id="tkPlus">+</button></div>
       <div class="change ${diff > 0 ? "up" : diff < 0 ? "down" : ""}">${diff === 0 ? `Stays at ${old}` : `${old} \u2192 ${res} (${diff > 0 ? "+" : ""}${diff})`}</div>
       <div class="takebtns"><button class="ghost" id="tkCancel" style="min-height:70px">Cancel</button><button class="print" id="tkSave">SAVE</button></div>`;
@@ -644,6 +646,7 @@ function drawTake() {
     $("#tkNum").onclick = () => { searchTarget = "count"; drawTyper(); $("#typer").classList.add("on"); };
     $("#tkCancel").onclick = () => { takeItem = null; drawTake(); };
     $("#tkSave").onclick = () => takeSave();
+    $("#tkLoc").onclick = () => pickLocation(takeItem, takeLoc, (loc) => { takeLoc = loc; drawTake(); });
   }
   $("#takeSession").innerHTML = `<h4>THIS SESSION</h4>` + (takeSession.length ? takeSession.map((x, i) =>
     `<div class="it${x.bad ? " bad" : ""}${x.undone ? " undone" : ""}"><div class="itrow"><span>${esc(x.name)}<small>${esc(x.what)} · ${x.time}</small></span>` +
@@ -683,8 +686,24 @@ function takeStart(item) {
     return;
   }
 
-  takeItem = item; takeCount = 1; drawTake(); poke();
+  takeItem = item; takeCount = 1; takeLoc = item.location || ""; drawTake(); poke();
 }
+
+/* ---------- location picker ---------- */
+// Choose where an item is kept: one of the known locations, or type a new one.
+let locDone = null;
+function pickLocation(item, current, done) {
+  locDone = done;
+  $("#locFor").textContent = `${item.name || "Item"} · now: ${item.location || "no location"}`;
+  const all = [...new Set([...(S.locations || []), item.location, current].filter(Boolean))].sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  $("#locChips").innerHTML = all.map((l) => `<button class="chip ${l === current ? "on" : ""}" data-loc="${esc(l)}">${esc(l)}</button>`).join("");
+  $("#locChips").querySelectorAll("[data-loc]").forEach((b) => (b.onclick = () => { $("#locPick").classList.remove("on"); locDone(b.dataset.loc); }));
+  $("#locPick").classList.add("on"); poke();
+}
+$("#locClose").onclick = () => $("#locPick").classList.remove("on");
+$("#locPick").onclick = (e) => { if (e.target.id === "locPick") $("#locPick").classList.remove("on"); };
+$("#locType").onclick = () => { $("#locPick").classList.remove("on"); searchTarget = "location"; locTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
+let locTyped = "";
 
 /* ---------- book in serials (same records as Payaz Stock's Book in serials) ---------- */
 // Choose the product, then scan the serial on each unit. Each scan saves at once.
@@ -698,6 +717,7 @@ function drawBookIn(card) {
   const item = S.items.find((i) => i.id === bookItem.id) || bookItem;
   card.innerHTML = `<h2>${esc(item.name || "(no name)")}</h2>
     <div class="meta">SKU ${esc(item.SKU || "-")} · In stock now: <b>${recorded(item)}</b> · Booked in this time: <b>${bookCount}</b></div>
+    <button class="locbtn" id="bkLoc">&#128205; Location: <b>${esc(item.location || "none")}</b> · tap to change</button>
     <div class="seg" id="bkMode"><button data-v="delivery" class="${bookMode === "delivery" ? "on" : ""}">New delivery<br><small style="font-weight:500">each scan adds 1 to stock</small></button>` +
     `<button data-v="shelf" class="${bookMode === "shelf" ? "on" : ""}">Already on the shelf<br><small style="font-weight:500">count stays the same, unless you scan more than it shows</small></button></div>
     ${bookMode === "delivery" ? `<button class="field" id="bkRef" style="padding:8px 14px"><div class="lbl">Delivery note or order reference (optional)</div>` +
@@ -708,6 +728,11 @@ function drawBookIn(card) {
     `<button class="print" id="bkDone">DONE</button></div>`;
   card.querySelectorAll("#bkMode button").forEach((b) => (b.onclick = () => { bookMode = b.dataset.v; drawTake(); poke(); }));
   $("#bkCam").onclick = () => scanWithCamera((c) => bookScan(c.trim()));
+  $("#bkLoc").onclick = () => pickLocation(item, item.location || "", async (loc) => {
+    try {
+      if (await S.setLocation(item.id, loc)) { bookItem = S.items.find((i) => i.id === item.id) || bookItem; bookNote("good", `\u2713 Location changed to <b>${esc(loc)}</b>`, item.name, `Moved to ${loc}`); }
+    } catch (e) { overlay("Couldn't change the location", friendlyError(e), true); }
+  });
   if ($("#bkRef")) $("#bkRef").onclick = () => { searchTarget = "bookref"; drawTyper(); $("#typer").classList.add("on"); };
   $("#bkType").onclick = () => { searchTarget = "serial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
   $("#bkDone").onclick = () => { bookItem = null; bookMsg = null; drawTake(); };
@@ -767,20 +792,28 @@ const hhmm = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", min
 /** Save the item being counted. Returns false if it couldn't be saved. */
 async function takeSave(auto = false) {
   if (!takeItem) return true;
-  const item = takeItem, n = takeCount, mode = takeMode;
+  const item = takeItem, n = takeCount, mode = takeMode, loc = takeLoc.trim();
+  const moveTo = loc && loc !== (item.location || "").trim() ? loc : "";
   const noChange = mode === "take" ? n === recorded(item) : n === 0;
   if (noChange) {
-    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: no change (${recorded(item)})`, time: hhmm() });
+    if (moveTo) {
+      try { await S.setLocation(item.id, moveTo); } catch (e) { overlay("Couldn't change the location", friendlyError(e), true); return false; }
+    }
+    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: no change (${recorded(item)})${moveTo ? ` · moved to ${moveTo}` : ""}`, time: hhmm() });
     takeItem = null; drawTake(); return true;
   }
   takeBusy = true;
   overlay("Saving…", item.name, false, true);
   try {
     const r = mode === "take" ? await S.saveCount(item, n) : mode === "add" ? await S.addStock(item, n) : await S.removeStock(item, n);
-    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: ${r.oldQty} \u2192 ${r.newQty}`, time: hhmm(),
+    let moved = "";
+    if (moveTo) {
+      try { await S.setLocation(item.id, moveTo); moved = ` · moved to ${moveTo}`; } catch (e) { moved = ` · location not changed (${friendlyError(e)})`; }
+    }
+    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: ${r.oldQty} \u2192 ${r.newQty}${moved}`, time: hhmm(),
       undo: { kind: "adjust", itemId: item.id, delta: r.newQty - r.oldQty, label: `${MODE_TEXT[mode].name} ${r.oldQty} \u2192 ${r.newQty}` } });
     takeItem = null; drawTake();
-    overlay("Saved \u2713", `${item.name}: ${r.oldQty} \u2192 ${r.newQty}`, false, true);
+    overlay("Saved \u2713", `${item.name}: ${r.oldQty} \u2192 ${r.newQty}${moved}`, false, true);
     setTimeout(hideOverlay, auto ? 700 : 1000);
     return true;
   } catch (e) {
@@ -957,9 +990,10 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
   if (searchTarget === "serial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
+  if (searchTarget === "location") { locTyped = v.slice(0, 60); return; }
   if (searchTarget === "bookref") { bookRef = v.toUpperCase().slice(0, 60); drawTake(); return; }
   if (searchTarget === "count") { takeCount = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
   return searchTarget === "stock" ? setStockSearch(v) : setSearch(v);
@@ -975,6 +1009,7 @@ $("#typerKbd").onclick = (e) => {
   if (k === "DONE") {
     $("#typer").classList.remove("on");
     if (searchTarget === "serial" && serialTyped.trim()) bookScan(serialTyped);
+    if (searchTarget === "location" && locTyped.trim() && locDone) locDone(locTyped.trim());
     return;
   }
   const cur = typerValue();

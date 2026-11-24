@@ -138,6 +138,15 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 .bookmsg b { font-weight: 900; }
 
 /* Typing pop-up */
+#locPick { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: center; justify-content: center; z-index: 7; }
+#locPick.on { display: flex; }
+#locPick .box { background: #fff; border-radius: 20px; padding: 22px 26px; width: 92%; max-width: 860px; display: flex; flex-direction: column; gap: 12px; max-height: 86%; }
+#locPick h2 { margin: 0; font-size: 26px; font-weight: 900; }
+#locPick .meta { color: var(--muted); font-size: 16px; font-weight: 700; }
+#locPick .chips { overflow-y: auto; }
+#locPick .btns { display: flex; gap: 10px; }
+.locbtn { background: #eef2f6; border: 3px solid transparent; font-weight: 700; font-size: 17px; padding: 10px 14px; text-align: left; }
+.locbtn.moved { border-color: var(--teal); background: #e3f6f7; }
 #typer { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: flex-end; justify-content: center; z-index: 8; }
 #typer.on { display: flex; }
 #typer .sheet { background: #fff; width: 100%; max-width: 900px; border-radius: 20px 20px 0 0; padding: 16px; display: flex; flex-direction: column; gap: 10px; height: 62%; }
@@ -400,6 +409,12 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
     <div class="btns"><button class="ghost" id="shEdit">&#9998; Edit item &amp; label</button><button class="ghost" id="shClose">Close</button></div>
   </div>
   <div class="prev" id="shPrev"></div>
+</div></div>
+<div id="locPick"><div class="box">
+  <h2>Where is it kept?</h2>
+  <div class="meta" id="locFor"></div>
+  <div class="chips" id="locChips"></div>
+  <div class="btns"><button class="ghost" id="locType">&#9000; Type a new location</button><button class="ghost" id="locClose">Cancel</button></div>
 </div></div>
 <div id="typer"><div class="sheet"><div class="shown" id="typerShown"></div><div class="kbd" id="typerKbd"></div></div></div>
 <div id="overlay"><div class="box" id="ovBox"><div class="msg" id="ovMsg"></div><div class="sub" id="ovSub"></div><div class="btnrow"><button id="ovAlt" class="alt" style="display:none"></button><button id="ovBtn">OK</button></div></div></div>

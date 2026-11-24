@@ -488,4 +488,42 @@ export const stock = {
       return product ? { item: product, unit } : null;
     } catch (e) { return null; }
   },
+
+  /** Move a product to another location: the item plus a history entry
+   *  ("Location changed: A -> B"), as Payaz Stock does. Returns true if it moved. */
+  async setLocation(itemId, location) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const loc = String(location || "").trim();
+    if (!loc) return false;
+    const itemRef = doc(db, "items", itemId);
+    let moved = false;
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(itemRef);
+      if (!snap.exists()) throw new Error("That item isn't in the stock app any more.");
+      const item = { id: snap.id, ...snap.data() };
+      if ((item.location || "").trim() === loc) return;
+      const now = new Date().toISOString(), movId = rid("mov");
+      tx.update(itemRef, { location: loc, updated_at: now });
+      tx.set(doc(db, "movements", movId), {
+        id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+        serial_number: null, direction: "adjustment", quantity_delta: 0,
+        location_from: item.location || "", location_to: loc,
+        user_id: this.user.uid, user_name: this.userName,
+        reason: `Location changed: ${item.location || "(none)"} → ${loc}`, source: "manual",
+      });
+      moved = true;
+    });
+    if (moved) {
+      const i = this.items.findIndex((x) => x.id === itemId);
+      if (i >= 0) this.items[i] = { ...this.items[i], location: loc };
+      if (!this.locations.includes(loc)) this.locations = [...this.locations, loc].sort();
+      // Add it to the stock app's list of locations (best effort)
+      try {
+        const id = "loc_" + loc.toLowerCase().replace(/[^a-z0-9]/g, "_");
+        const b = writeBatch(db); b.set(doc(db, "locations", id), { id, name: loc, created_at: new Date().toISOString() }, { merge: true }); await b.commit();
+      } catch (e) {}
+    }
+    return moved;
+  },
 };
