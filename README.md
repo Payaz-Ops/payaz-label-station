@@ -80,7 +80,7 @@ The log is saved on the tablet. In the Android app it's also copied to
 **Documents/PayazLabels/payaz-label-log.csv** after every print, so you can find it with the
 Files app. Uninstalling the app deletes the in-app log, so export it first.
 
-**⚙ Settings** has the label size (including **50 × 80 mm**, which prints stock labels landscape across the label), print darkness (1–9), flip upside down and the test print. If a code is too long for the label, the preview warns that the barcode lines will be very thin.
+**⚙ Settings** has the label size (including **50 × 80 mm**), the **stock label orientation** (Upright, Landscape ↻ or Landscape ↺, also on the stock label pop-up), print darkness (1–9), flip upside down and the test print. If a code is too long for the label, the preview warns that the barcode lines will be very thin.
 
 ## Payaz Stock link (for someone technical)
 

@@ -36,9 +36,17 @@ const fields = () => MODES[mode].fields;
 const fieldOf = (k) => fields().find((f) => f.k === k);
 
 /* ---------- settings (saved on this tablet) ---------- */
-const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockLandscape: false };
+// stockOrient: how stock labels sit on the label: "upright", or landscape turned "right" / "left"
+const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockOrient: "upright" };
 let settings = { ...DEFAULTS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem("payaz-settings") || "{}")); } catch (e) {}
+try {
+  const saved = JSON.parse(localStorage.getItem("payaz-settings") || "{}");
+  // Older versions saved stockLandscape on/off instead of stockOrient
+  if (saved.stockOrient === undefined && saved.stockLandscape !== undefined) saved.stockOrient = saved.stockLandscape ? "right" : "upright";
+  delete saved.stockLandscape;
+  Object.assign(settings, saved);
+} catch (e) {}
+if (!["upright", "right", "left"].includes(settings.stockOrient)) settings.stockOrient = "upright";
 function saveSettings(change) {
   Object.assign(settings, change);
   settings.widthMm = Math.max(20, Math.min(50, +settings.widthMm));
@@ -94,7 +102,7 @@ function thinWarning(thin) {
 }
 function makeLabel(kind, values) {
   return renderLabel(kind, values, { widthMm: settings.widthMm, heightMm: settings.heightMm, rotate: settings.rotate, stockCode: settings.stockCode,
-    landscape: kind === "stock" && !!settings.stockLandscape });
+    landscape: kind === "stock" && settings.stockOrient !== "upright" ? settings.stockOrient : false });
 }
 let prevTimer;
 function render() {
@@ -453,19 +461,25 @@ function drawSettings() {
   $("#hmm").textContent = settings.heightMm + " mm";
   $("#dens").textContent = settings.density;
   $("#rotVal").textContent = settings.rotate ? "ON" : "OFF";
-  $("#landVal").textContent = settings.stockLandscape ? "ON" : "OFF";
+  document.querySelectorAll("#setOrient [data-so]").forEach((b) => b.classList.toggle("on", b.dataset.so === settings.stockOrient));
   document.querySelectorAll("[data-sc]").forEach((b) => b.classList.toggle("on", b.dataset.sc === settings.stockCode));
   $("#sizeChips").innerHTML = PRESETS.map(([w, h]) =>
     `<button class="chip ${w == settings.widthMm && h == settings.heightMm ? "on" : ""}" data-w="${w}" data-h="${h}">${w} × ${h} mm</button>`).join("");
   // 50 x 80 mm: stock labels print landscape (across the label); other sizes upright
-  $("#sizeChips").querySelectorAll("button").forEach((b) => (b.onclick = () =>
-    saveSettings({ widthMm: +b.dataset.w, heightMm: +b.dataset.h, stockLandscape: +b.dataset.w === 50 && +b.dataset.h === 80 })));
+  $("#sizeChips").querySelectorAll("button").forEach((b) => (b.onclick = () => {
+    const tall = +b.dataset.w === 50 && +b.dataset.h === 80;
+    saveSettings({ widthMm: +b.dataset.w, heightMm: +b.dataset.h, stockOrient: tall ? (settings.stockOrient === "left" ? "left" : "right") : "upright" });
+  }));
 }
 document.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => {
   const [k, d] = b.dataset.d.split(":"); saveSettings({ [k]: +settings[k] + +d });
 }));
 $("#rotBtn").onclick = () => saveSettings({ rotate: !settings.rotate });
-$("#landBtn").onclick = () => saveSettings({ stockLandscape: !settings.stockLandscape });
+// Stock label orientation: in Settings and on the stock label pop-up
+document.querySelectorAll("[data-so]").forEach((b) => (b.onclick = () => {
+  saveSettings({ stockOrient: b.dataset.so });
+  if ($("#sheet").classList.contains("on")) drawSheet();
+}));
 document.querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => saveSettings({ stockCode: b.dataset.sc })));
 $("#reloadBtn").onclick = () => location.reload();
 
@@ -547,6 +561,7 @@ function openSheet(item) {
 }
 function drawSheet() {
   $("#shCopies").textContent = sheetCopies;
+  document.querySelectorAll("#shOrient [data-so]").forEach((b) => b.classList.toggle("on", b.dataset.so === settings.stockOrient));
   const lbl = makeLabel("stock", stockLabelValues(sheetItem));
   $("#shPrev").replaceChildren(lbl.canvas, ...thinWarning(lbl.thinBars));
 }

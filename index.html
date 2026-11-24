@@ -367,8 +367,14 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
     <div class="chips">
       <button class="chip" data-sc="barcode">Barcode (any scanner)</button>
       <button class="chip" data-sc="qr">QR code (camera / 2D scanners)</button>
-      <button class="chip" id="landBtn">Stock labels landscape: <span id="landVal"></span></button>
     </div>
+    <h3 style="margin-top:14px">Stock label orientation</h3>
+    <div class="chips" id="setOrient">
+      <button class="chip" data-so="upright">Upright</button>
+      <button class="chip" data-so="right">Landscape &#8635;</button>
+      <button class="chip" data-so="left">Landscape &#8634;</button>
+    </div>
+    <div class="hint">Landscape prints across the label (best on 50 &times; 80 mm). If landscape labels come out the wrong way round, choose the other landscape button.</div>
     <div class="hint">QR codes cope better if barcode lines print blurred, and scan easily with a phone camera. Basic laser scanners can't read them.</div>
   </div>
   <div class="card">
@@ -386,6 +392,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
       <div class="copies"><button id="shMinus">&minus;</button><span><small>COPIES</small><b id="shCopies">1</b></span><button id="shPlus">+</button></div>
       <button class="print" id="shPrint">PRINT LABEL</button>
     </div>
+    <div class="seg" id="shOrient"><button data-so="upright">Upright</button><button data-so="right">Landscape &#8635;</button><button data-so="left">Landscape &#8634;</button></div>
     <div class="btns"><button class="ghost" id="shEdit">&#9998; Edit item &amp; label</button><button class="ghost" id="shClose">Close</button></div>
   </div>
   <div class="prev" id="shPrev"></div>

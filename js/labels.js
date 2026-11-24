@@ -288,7 +288,8 @@ export function formatDate(d = new Date()) {
  * { width, height, data } with 1 = black dot, ready for the printer.
  */
 // landscape: draw the label sideways (heightMm wide, widthMm tall), e.g. a stock
-// label across a 50 x 80 mm label, then turn it a quarter turn for the printer.
+// label across a 50 x 80 mm label, then turn it a quarter turn for the printer:
+// "right" (or true) turns it clockwise, "left" anticlockwise.
 export function renderLabel(kind, values, { widthMm = 40, heightMm = 30, rotate = false, when, stockCode = "barcode", landscape = false } = {}) {
   const W = Math.round((landscape ? heightMm : widthMm) * DPMM), H = Math.round((landscape ? widthMm : heightMm) * DPMM);
   lastBarModule = 0;
@@ -327,7 +328,11 @@ export function renderLabel(kind, values, { widthMm = 40, heightMm = 30, rotate 
   let out = data, outW = W, outH = H;
   if (landscape) {
     outW = H; outH = W; out = new Uint8Array(W * H);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) out[x * outW + (H - 1 - y)] = data[y * W + x];
+    if (landscape === "left") {
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) out[(W - 1 - x) * outW + y] = data[y * W + x];
+    } else {
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) out[x * outW + (H - 1 - y)] = data[y * W + x];
+    }
   }
   if (rotate) out.reverse();
   // thinBars: a barcode had to be drawn with 1-dot bars, which may smudge together
