@@ -6,7 +6,7 @@ import {
   initializeApp, initializeAuth, indexedDBLocalPersistence, browserLocalPersistence,
   signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
   initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
-  query, where, getCountFromServer,
+  query, where, getCountFromServer, serverTimestamp,
 } from "./firebase.js";
 
 // Public web settings of the Payaz Stock app (the same values its website uses).
@@ -384,7 +384,8 @@ export const stock = {
     let result;
     await runTransaction(db, async (tx) => {
       const existing = await tx.get(unitRef);
-      if (existing.exists()) { result = { kind: "exists", unit: existing.data() }; return; }
+      // A unit cancelled (scanned by mistake) can be booked in again, e.g. under the right product
+      if (existing.exists() && existing.data().status !== "cancelled") { result = { kind: "exists", unit: existing.data() }; return; }
       const itemSnap = await tx.get(itemRef);
       if (!itemSnap.exists()) throw new Error("That item isn't in the stock app any more.");
       const item = { id: itemSnap.id, ...itemSnap.data() };
@@ -395,9 +396,11 @@ export const stock = {
         received_mode: mode === "shelf" ? "shelf" : "delivery", updated_at: now,
       };
       if (ref) unit.received_ref = ref;
-      tx.set(unitRef, unit);
       let newQty = Number(item.quantity_on_hand) || 0, raised = false;
       const shelfOver = unit.received_mode === "shelf" && inStockBefore + 1 > newQty;
+      // received_ts: server time, so the person who scanned it can undo it for 15 minutes;
+      // received_raised: this booking added 1 to stock (undoing it takes 1 off)
+      tx.set(unitRef, { ...unit, received_ts: serverTimestamp(), received_raised: unit.received_mode === "delivery" || shelfOver });
       if (unit.received_mode === "delivery" || shelfOver) {
         const oldQty = newQty; newQty = oldQty + 1; raised = shelfOver;
         const movId = rid("mov");
@@ -426,5 +429,63 @@ export const stock = {
       result = { kind: "added", unit, newQty, raised };
     });
     return result;
+  },
+
+  /** Undo a unit booked in by mistake: only the person who scanned it, within 15
+   *  minutes (the database rules check both). Takes 1 off stock if the booking added 1. */
+  async undoBookIn(rawSerial) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const key = this.serialKey(rawSerial), who = { id: this.user.uid, name: this.userName };
+    const unitRef = doc(db, "serial_units", key);
+    let undone;
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(unitRef);
+      if (!snap.exists()) throw new Error("That serial isn't booked in.");
+      const u = snap.data();
+      if (u.status !== "in_stock") throw new Error(`It's no longer in stock (it's recorded as ${u.status}).`);
+      if (u.received_by_id !== who.id) throw new Error("Only the person who booked it in can undo it. Ask a manager.");
+      if (Date.now() - new Date(u.received_at).getTime() > 15 * 60000) throw new Error("It's more than 15 minutes since it was booked in. Ask a manager to cancel it in Payaz Stock.");
+      const raised = u.received_raised ?? u.received_mode === "delivery";
+      const itemRef = doc(db, "items", u.item_id);
+      const itemSnap = raised ? await tx.get(itemRef) : null;
+      const now = new Date().toISOString(), note = "Scanned by mistake: undone by the person who scanned it";
+      tx.update(unitRef, { status: "cancelled", cancelled_at: now, cancelled_by_id: who.id, cancelled_by_name: who.name, note, updated_at: now });
+      let newQty = null;
+      if (itemSnap && itemSnap.exists()) {
+        const item = { id: itemSnap.id, ...itemSnap.data() };
+        const oldQty = Number(item.quantity_on_hand) || 0; newQty = Math.max(0, oldQty - 1);
+        const movId = rid("mov");
+        tx.update(itemRef, { quantity_on_hand: newQty, last_serial_key: key, updated_at: now });
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+          serial_number: u.serial_number, direction: "out", quantity_delta: 1,
+          location_from: item.location, location_to: "External", user_id: who.id, user_name: who.name,
+          reason: `[Serial booked in by mistake] ${u.serial_number}: ${note} (Old: ${oldQty} → New: ${newQty})`, source: "scan",
+        });
+        const i = this.items.findIndex((x) => x.id === item.id);
+        if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: newQty, updated_at: now };
+      }
+      const id = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      tx.set(doc(db, "serial_events", id), {
+        id, serial_key: key, serial_number: u.serial_number, type: "cancelled", item_id: u.item_id, item_name: u.item_name,
+        note, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now,
+      });
+      undone = { unit: u, newQty };
+    });
+    return undone;
+  },
+
+  /** An item by its barcode / SKU / id, or else the product a booked-in serial belongs to.
+   *  Returns { item, unit } (unit only for a serial), or null. */
+  async findItemOrSerial(code) {
+    const item = this.findByCode(code);
+    if (item) return { item, unit: null };
+    if (!this.user || this.normaliseSerial(code).length < 4) return null;
+    try {
+      const unit = await this.lookupSerial(code);
+      const product = unit && this.items.find((i) => i.id === unit.item_id);
+      return product ? { item: product, unit } : null;
+    } catch (e) { return null; }
   },
 };

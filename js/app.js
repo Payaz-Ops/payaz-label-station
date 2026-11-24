@@ -538,10 +538,16 @@ function drawStock() {
   }));
 }
 // A scan on the stock screen: open that item, or offer to add it.
-function stockScan(code) {
+async function stockScan(code) {
   if (!code) return;
-  const item = S.findByCode(code);
-  if (item) { stockSearch = ""; drawStock(); openSheet(item); return; }
+  // Barcode / SKU, or the product a booked-in serial number belongs to
+  const found = await S.findItemOrSerial(code);
+  if (found) {
+    stockSearch = ""; drawStock();
+    if (pickForTake) { pickForTake = false; openStock("take"); takeStart(found.item); return; }
+    openSheet(found.item, found.unit ? `Serial <b>${esc(found.unit.serial_number)}</b>: ${esc(serialStatusText(found.unit))}` : "");
+    return;
+  }
   setStockSearch(code);
   if (!stockMatches().length)
     overlay("Not in the stock app", `Nothing has the code ${code}.`, false, false, { label: "Add it as a new item", run: () => openNewItem({ barcode: code }) });
@@ -549,14 +555,16 @@ function stockScan(code) {
 const stockLabelValues = (i) => ({ name: i.name || "", location: i.location || "", code: S.labelCode(i) });
 
 // Item pop-up: print its label
-function openSheet(item) {
+const serialStatusText = (u) => u.status === "in_stock" ? "in stock" : u.status === "dispatched" ? `sent on order ${u.order_number || "?"}` : u.status;
+function openSheet(item, note = "") {
   if (!item) return;
   sheetItem = item; sheetCopies = 1;
   $("#shName").textContent = item.name || "(no name)";
   $("#shPic").style.display = item.image_url ? "" : "none";
   $("#shPic").style.backgroundImage = item.image_url ? `url("${item.image_url}")` : "";
   $("#shMeta").innerHTML = `SKU <b>${esc(item.SKU || "-")}</b>${item.barcode ? ` · Barcode <b>${esc(item.barcode)}</b>` : ""}<br>` +
-    `Location <b>${esc(item.location || "-")}</b> · In stock <b>${item.quantity_on_hand ?? "-"}</b>${item.category ? ` · ${esc(item.category)}` : ""}`;
+    `Location <b>${esc(item.location || "-")}</b> · In stock <b>${item.quantity_on_hand ?? "-"}</b>${item.category ? ` · ${esc(item.category)}` : ""}` +
+    (note ? `<br>${note}` : "");
   drawSheet(); $("#sheet").classList.add("on"); poke();
 }
 function drawSheet() {
@@ -637,8 +645,34 @@ function drawTake() {
     $("#tkCancel").onclick = () => { takeItem = null; drawTake(); };
     $("#tkSave").onclick = () => takeSave();
   }
-  $("#takeSession").innerHTML = `<h4>THIS SESSION</h4>` + (takeSession.length ? takeSession.map((x) =>
-    `<div class="it${x.bad ? " bad" : ""}">${esc(x.name)}<small>${esc(x.what)} · ${x.time}</small></div>`).join("") : `<div class="it"><small>Nothing saved yet.</small></div>`);
+  $("#takeSession").innerHTML = `<h4>THIS SESSION</h4>` + (takeSession.length ? takeSession.map((x, i) =>
+    `<div class="it${x.bad ? " bad" : ""}${x.undone ? " undone" : ""}"><div class="itrow"><span>${esc(x.name)}<small>${esc(x.what)} · ${x.time}</small></span>` +
+    (canUndo(x) ? `<button class="undo" data-undo="${i}">Undo</button>` : "") + `</div></div>`).join("") : `<div class="it"><small>Nothing saved yet.</small></div>`);
+  $("#takeSession").querySelectorAll("[data-undo]").forEach((b) => (b.onclick = () => undoEntry(takeSession[+b.dataset.undo])));
+}
+
+/* ---------- undo a scan made by mistake ---------- */
+// Saved counts and adds/removes can be undone (the change is reversed, with its own
+// history entry). Serials booked in can be undone by the same person for 15 minutes.
+const canUndo = (x) => x.undo && !x.undone && (x.undo.kind !== "serial" || Date.now() - x.undo.at < 15 * 60000);
+async function undoEntry(x) {
+  if (!x || !canUndo(x)) return;
+  overlay("Undoing…", x.name, false, true);
+  try {
+    if (x.undo.kind === "serial") {
+      const r = await S.undoBookIn(x.undo.serial);
+      x.what = `Undone: taken back out${r.newQty !== null ? ` (stock now ${r.newQty})` : ""}`;
+    } else {
+      const r = await S.adjustStock(x.undo.itemId, { change: -x.undo.delta, reason: `Undo: ${x.undo.label} (scanned by mistake)` });
+      x.what = `Undone: back to ${r.newQty}`;
+    }
+    x.undone = true;
+    overlay("Undone \u2713", x.name, false, true);
+    setTimeout(hideOverlay, 900);
+  } catch (e) {
+    overlay("Couldn't undo", friendlyError(e), true);
+  }
+  drawTake();
 }
 function takeStart(item) {
   if (takeMode === "bookin") { bookStart(item); return; }
@@ -678,9 +712,10 @@ function drawBookIn(card) {
   $("#bkType").onclick = () => { searchTarget = "serial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
   $("#bkDone").onclick = () => { bookItem = null; bookMsg = null; drawTake(); };
 }
-function bookNote(tone, html, sessionName, sessionWhat) {
+function bookNote(tone, html, sessionName, sessionWhat, undoSerial) {
   bookMsg = { tone, text: html };
-  if (sessionName) takeSession.unshift({ name: sessionName, what: sessionWhat, time: hhmm(), bad: tone === "bad" });
+  if (sessionName) takeSession.unshift({ name: sessionName, what: sessionWhat, time: hhmm(), bad: tone === "bad",
+    undo: undoSerial ? { kind: "serial", serial: undoSerial, at: Date.now() } : null });
   drawTake(); poke();
 }
 function bookScan(code) {
@@ -701,7 +736,7 @@ function bookScan(code) {
       if (r.kind === "added") {
         if (bookItem && bookItem.id === item.id) bookCount++;
         bookNote("good", `\u2713 <b>${esc(serial)}</b> booked in${mode === "delivery" ? `, stock now ${r.newQty}` : r.raised ? `. More serials than the stock count, so the count went up to ${r.newQty}` : ""}`,
-          serial, `Booked in: ${item.name}${mode === "delivery" ? ` (new delivery${ref ? `, ${ref}` : ""})` : " (already on the shelf)"}`);
+          serial, `Booked in: ${item.name}${mode === "delivery" ? ` (new delivery${ref ? `, ${ref}` : ""})` : " (already on the shelf)"}`, serial);
       } else if (r.kind === "exists") {
         const u = r.unit, when = shortDate(u.received_at);
         const where = u.status === "dispatched" ? `and sent on order ${u.order_number}. Tell a manager.` : `(${u.status === "in_stock" ? "in stock" : u.status}).`;
@@ -717,7 +752,8 @@ function bookScan(code) {
 async function takeScan(code) {
   if (takeMode === "bookin") { bookScan(code); return; }
   if (!code || takeBusy) return;
-  const item = S.findByCode(code);
+  const found = await S.findItemOrSerial(code);
+  const item = found && found.item;
   if (!item) {
     overlay("Not in the stock app", `Nothing has the code ${code}.`, false, false, { label: "Add it as a new item", run: () => openNewItem({ barcode: code }) });
     return;
@@ -741,7 +777,8 @@ async function takeSave(auto = false) {
   overlay("Saving…", item.name, false, true);
   try {
     const r = mode === "take" ? await S.saveCount(item, n) : mode === "add" ? await S.addStock(item, n) : await S.removeStock(item, n);
-    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: ${r.oldQty} \u2192 ${r.newQty}`, time: hhmm() });
+    takeSession.unshift({ name: item.name, what: `${MODE_TEXT[mode].name}: ${r.oldQty} \u2192 ${r.newQty}`, time: hhmm(),
+      undo: { kind: "adjust", itemId: item.id, delta: r.newQty - r.oldQty, label: `${MODE_TEXT[mode].name} ${r.oldQty} \u2192 ${r.newQty}` } });
     takeItem = null; drawTake();
     overlay("Saved \u2713", `${item.name}: ${r.oldQty} \u2192 ${r.newQty}`, false, true);
     setTimeout(hideOverlay, auto ? 700 : 1000);
