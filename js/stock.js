@@ -21,15 +21,43 @@ const CONFIG = {
 };
 const DATABASE = "stock";
 
-let app, auth, db;
-function init() {
-  if (app) return;
-  app = initializeApp(CONFIG, "payaz-stock");
-  // initializeAuth without a popup resolver: no Google sign-in iframes, which
-  // don't work inside the Android app. Stay signed in between launches.
-  auth = initializeAuth(app, { persistence: [indexedDBLocalPersistence, browserLocalPersistence] });
-  db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true }, DATABASE);
+/* ---------- people on this tablet ----------
+   Each person signs in once with their Payaz Stock email and password and picks a
+   4-digit PIN. Their sign-in is kept in its own Firebase app (its own saved
+   session), so switching person needs only the PIN and everything they do is
+   recorded under their own name. Passwords are never stored; the PIN is kept as
+   a salted hash on this tablet only. */
+const PEOPLE_KEY = "payaz-people";
+const MAX_TRIES = 5;
+const instances = {}; // appName -> { app, auth, db }
+function instance(appName) {
+  if (!instances[appName]) {
+    const a = initializeApp(CONFIG, appName);
+    // initializeAuth without a popup resolver: no Google sign-in iframes, which
+    // don't work inside the Android app. Stay signed in between launches.
+    const au = initializeAuth(a, { persistence: [indexedDBLocalPersistence, browserLocalPersistence] });
+    const d = initializeFirestore(a, { experimentalAutoDetectLongPolling: true }, DATABASE);
+    instances[appName] = { app: a, auth: au, db: d };
+  }
+  return instances[appName];
 }
+let auth = null, db = null; // the person using the tablet now (null when locked)
+function init() {
+  if (!db) { const e = new Error("Choose your name and enter your PIN first."); e.code = "locked"; throw e; }
+}
+function loadPeople() { try { return JSON.parse(localStorage.getItem(PEOPLE_KEY)) || []; } catch (e) { return []; } }
+function savePeople(list) { localStorage.setItem(PEOPLE_KEY, JSON.stringify(list)); }
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+async function pinHash(pin, saltB64) {
+  const salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(String(pin)), "PBKDF2", false, ["deriveBits"]);
+  return b64(await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 150000, hash: "SHA-256" }, key, 256));
+}
+async function newPin(pin) {
+  const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+  return { salt, hash: await pinHash(pin, salt) };
+}
+const err = (code, message) => Object.assign(new Error(message), { code });
 
 // Damage reasons, as in Payaz Stock's Report Damage form
 export const DAMAGE_REASONS = {
@@ -59,33 +87,106 @@ export const stock = {
   profile: null,  // staff_accounts profile ({ name, role, ... })
   items: [], locations: [], categories: [],
 
-  /** Calls back whenever sign-in changes (after the saved sign-in is restored). */
-  watch(callback) {
-    init();
-    return onAuthStateChanged(auth, async (user) => {
-      this.user = user; this.profile = null;
-      if (user) { try { await this.loadProfile(); } catch (e) {} }
-      callback(user);
-    });
+  person: null,   // the person using the tablet now: { id, name, email }
+  watchers: [],
+  /** Calls back whenever the person using the tablet changes (unlock or lock). */
+  watch(callback) { this.watchers.push(callback); },
+  _changed() { this.watchers.forEach((f) => { try { f(this.user); } catch (e) {} }); },
+
+  /** Everyone set up on this tablet: [{ id, name, email }], in name order. */
+  people() {
+    return loadPeople().map(({ id, name, email }) => ({ id, name, email }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
   },
 
-  async signIn(email, password) {
-    init();
-    const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-    this.user = cred.user;
-    await this.loadProfile();
-    if (!this.isStaff) {
-      const name = cred.user.email;
-      await signOut(auth);
-      const err = new Error(`${name} isn't set up as Payaz Stock staff (or the account is turned off). Ask an admin to add you in Payaz Stock > Manage Staff.`);
-      err.code = "not-staff";
-      throw err;
+  /** Step 1 of adding a person (or a forgotten PIN): sign in with their email and
+   *  password and check they're active staff. Nothing is saved until finishPerson. */
+  async checkPerson(email, password) {
+    email = String(email || "").trim();
+    const known = loadPeople().find((p) => p.email.toLowerCase() === email.toLowerCase());
+    const appName = known ? known.appName : "payaz-u-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const inst = instance(appName);
+    const cred = await signInWithEmailAndPassword(inst.auth, email, password);
+    const snap = await getDoc(doc(inst.db, "staff_accounts", cred.user.uid));
+    const profile = snap.exists() ? snap.data() : null;
+    if (!profile || profile.disabled === true || profile.removed === true) {
+      await signOut(inst.auth);
+      throw err("not-staff", `${email} isn't set up as Payaz Stock staff (or the account is turned off). Ask an admin to add you in Payaz Stock > Manage Staff.`);
     }
+    this._pending = { id: cred.user.uid, name: profile.name || cred.user.displayName || email, email, appName, known: !!known };
+    return { name: this._pending.name };
+  },
+  /** Step 2: save their PIN. Returns the person. */
+  async finishPerson(pin) {
+    const p = this._pending;
+    if (!p) throw err("no-person", "Sign in with your email and password first.");
+    if (!/^\d{4}$/.test(String(pin))) throw err("bad-pin", "The PIN must be 4 numbers.");
+    const others = loadPeople().filter((x) => x.id !== p.id && x.email.toLowerCase() !== p.email.toLowerCase());
+    savePeople([...others, { id: p.id, name: p.name, email: p.email, appName: p.appName, pin: await newPin(pin), tries: 0 }]);
+    this._pending = null;
+    return { id: p.id, name: p.name, email: p.email };
+  },
+  /** Gave up part way: a new person's sign-in is ended (a known person's is kept). */
+  async cancelPerson() {
+    const p = this._pending; this._pending = null;
+    if (p && !p.known) { try { await signOut(instance(p.appName).auth); } catch (e) {} }
   },
 
-  async signOut() { init(); await signOut(auth); this.items = []; },
+  /** Unlock the tablet for a person with their PIN. Wrong PINs count down; after
+   *  5 wrong tries (or if their saved sign-in has ended) they sign in again with
+   *  their password (code "needs-password"). */
+  async unlock(id, pin) {
+    const list = loadPeople(), p = list.find((x) => x.id === id);
+    if (!p) throw err("unknown", "That person isn't set up on this tablet any more.");
+    if ((p.tries || 0) >= MAX_TRIES) throw err("needs-password", "Too many wrong PINs. Sign in with your password to choose a new PIN.");
+    if ((await pinHash(pin, p.pin.salt)) !== p.pin.hash) {
+      p.tries = (p.tries || 0) + 1; savePeople(list);
+      const left = MAX_TRIES - p.tries;
+      throw left > 0 ? err("wrong-pin", `Wrong PIN. ${left} ${left === 1 ? "try" : "tries"} left.`) : err("needs-password", "Too many wrong PINs. Sign in with your password to choose a new PIN.");
+    }
+    p.tries = 0; savePeople(list);
+    const inst = instance(p.appName);
+    await inst.auth.authStateReady();
+    const user = inst.auth.currentUser;
+    if (!user || user.uid !== p.id) throw err("needs-password", "Your sign-in has ended. Sign in with your password again.");
+    auth = inst.auth; db = inst.db;
+    this.user = user; this.person = { id: p.id, name: p.name, email: p.email };
+    try {
+      await this.loadProfile();
+    } catch (e) {
+      this.profile = { name: p.name }; // offline: carry on with the name saved on the tablet
+    }
+    if (this.profile && (this.profile.disabled === true || this.profile.removed === true)) {
+      this.lock(); this.removePerson(p.id);
+      throw err("not-staff", "Your Payaz Stock login has been turned off, so you've been taken off this tablet. Ask an admin.");
+    }
+    if (this.profile && this.profile.name && this.profile.name !== p.name) { p.name = this.profile.name; savePeople(list); }
+    this._changed();
+    return this.person;
+  },
 
-  resetPassword(email) { init(); return sendPasswordResetEmail(auth, email.trim()); },
+  /** Back to "Who's using the tablet?". Each person stays signed in underneath. */
+  lock() {
+    const was = !!db;
+    auth = null; db = null; this.user = null; this.profile = null; this.person = null;
+    if (was) this._changed();
+  },
+
+  /** Take a person off this tablet (they'd sign in with their password to come back). */
+  async removePerson(id) {
+    const list = loadPeople(), p = list.find((x) => x.id === id);
+    if (!p) return;
+    savePeople(list.filter((x) => x.id !== id));
+    if (this.person && this.person.id === id) this.lock();
+    try { await signOut(instance(p.appName).auth); } catch (e) {}
+  },
+
+  /** Before PIN sign-in, one shared sign-in was kept under "payaz-stock": end it. */
+  async forgetOldSignIn() {
+    try { const old = instance("payaz-stock"); await old.auth.authStateReady(); if (old.auth.currentUser) await signOut(old.auth); } catch (e) {}
+  },
+
+  resetPassword(email) { return sendPasswordResetEmail(instance("payaz-reset").auth, email.trim()); },
 
   async loadProfile() {
     const snap = await getDoc(doc(db, "staff_accounts", this.user.uid));

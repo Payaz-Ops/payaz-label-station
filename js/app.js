@@ -45,7 +45,8 @@ document.addEventListener("focusin", (e) => {
 
 /* ---------- settings (saved on this tablet) ---------- */
 // stockOrient: how stock labels sit on the label: "upright", or landscape turned "right" / "left"
-const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockOrient: "upright" };
+// lockMins: back to "Who's using the tablet?" after this many minutes untouched
+const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockOrient: "upright", lockMins: 5 };
 let settings = { ...DEFAULTS };
 try {
   const saved = JSON.parse(localStorage.getItem("payaz-settings") || "{}");
@@ -55,6 +56,7 @@ try {
   Object.assign(settings, saved);
 } catch (e) {}
 if (!["upright", "right", "left"].includes(settings.stockOrient)) settings.stockOrient = "upright";
+if (![2, 5, 10, 15].includes(settings.lockMins)) settings.lockMins = 5;
 function saveSettings(change) {
   Object.assign(settings, change);
   settings.widthMm = Math.max(20, Math.min(50, +settings.widthMm));
@@ -67,9 +69,12 @@ function saveSettings(change) {
 /* ---------- navigation ---------- */
 function show(id) {
   document.querySelectorAll(".screen").forEach((s) => s.classList.toggle("on", s.id === id));
-  $("#backBtn").style.display = id === "home" ? "none" : "";
+  const locked = id === "who";
+  $("#backBtn").style.display = id === "home" || locked ? "none" : "";
   $("#setBtn").style.display = id === "home" ? "" : "none";
   $("#pill").style.display = id === "home" ? "" : "none";
+  $("#whoBtn").style.display = S.person && !locked && id !== "addme" ? "" : "none";
+  if (S.person) $("#whoName").textContent = S.person.name.split(" ")[0];
 }
 function home() {
   Object.keys(vals).forEach((k) => (vals[k] = ""));
@@ -470,7 +475,7 @@ $("#ovBtn").onclick = hideOverlay;
 
 /* ---------- settings screen ---------- */
 const PRESETS = [[40, 30], [40, 40], [40, 60], [50, 30], [50, 50], [50, 80]];
-function openSettings() { $("#hdrTitle").textContent = "Settings"; show("settings"); drawSettings(); drawPrinter(); }
+function openSettings() { $("#hdrTitle").textContent = "Settings"; show("settings"); drawSettings(); drawPrinter(); drawPeopleSettings(); }
 function drawSettings() {
   $("#wmm").textContent = settings.widthMm + " mm";
   $("#hmm").textContent = settings.heightMm + " mm";
@@ -515,7 +520,8 @@ async function openStock(view = stockView) {
   $("#takeModes").style.display = takeMode === "damage" ? "none" : "";
   show("stock"); poke();
   const signedIn = S.user && S.isStaff;
-  $("#stockSignin").style.display = signedIn ? "none" : "flex";
+  if (!signedIn) { showWho(); return; }
+  $("#stockSignin").style.display = "none";
   const showTake = signedIn && view === "take" && !pickForTake;
   $("#takeMain").style.display = showTake ? "flex" : "none";
   $("#stockMain").style.display = signedIn && !showTake ? "flex" : "none";
@@ -615,8 +621,7 @@ $("#stForgot").onclick = async () => {
   try { await S.resetPassword(email); overlay("Check your email", `If ${email} has a Payaz Stock login, a link to set a password is on its way.`); }
   catch (e) { overlay("Couldn't send the email", friendlyError(e), true); }
 };
-$("#stSignOut").onclick = () => overlay("Sign out of Payaz Stock?", "You'll need your email and password to sign in again.", false, false,
-  { label: "Sign out", run: async () => { await S.signOut(); openStock(); } });
+$("#stSignOut").onclick = () => lockNow();
 $("#stRefresh").onclick = refreshStock;
 $("#stClear").onclick = () => setStockSearch("");
 $("#stSearchBtn").onclick = () => { searchTarget = "stock"; drawTyper(); $("#typer").classList.add("on"); };
@@ -1399,7 +1404,8 @@ $("#typerKbd").onclick = (e) => {
   drawTyper();
 };
 $("#typer").onclick = (e) => { if (e.target.id === "typer") $("#typer").classList.remove("on"); };
-$("#backBtn").onclick = () => {
+$("#backBtn").onclick = async () => {
+  if ($("#addme").classList.contains("on")) { await S.cancelPerson(); return showWho(); }
   if ($("#newitem").classList.contains("on")) return openStock();
   if ($("#stock").classList.contains("on") && pickForTake) { pickForTake = false; return openStock("take"); }
   if ($("#stock").classList.contains("on")) return leaveToHome();
@@ -1409,12 +1415,15 @@ $("#setBtn").onclick = openSettings;
 
 /* ---------- tablet niceties ---------- */
 // Back to the start screen after 3 minutes of no use
+let lockTimer = null;
 function poke() {
-  clearTimeout(idleTimer);
+  clearTimeout(idleTimer); clearTimeout(lockTimer);
   idleTimer = setTimeout(async () => {
+    if (!S.person) return;
     if (takeItem && !(await takeSave(true))) return; // keep an unsaved count on screen if saving failed
     hideOverlay(); closeCamera(); closeSheet(); pickForTake = false; home();
-  }, 180000);
+  }, Math.min(180000, settings.lockMins * 60000 - 1000));
+  if (S.person) lockTimer = setTimeout(() => lockNow(true), settings.lockMins * 60000);
 }
 document.addEventListener("pointerdown", poke);
 document.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -1433,6 +1442,140 @@ if (!NATIVE && "serviceWorker" in navigator && location.protocol === "https:") n
 // Load the label font before drawing any label
 const face = new FontFace(LABEL_FONT, "url(fonts/AtkinsonHyperlegible-Bold.ttf)");
 face.load().then((f) => document.fonts.add(f)).catch(() => {}).finally(() => { if (active) render(); });
+
+/* ---------- who's using the tablet (PIN sign-in) ---------- */
+// Each person adds themselves once (email + password, then a 4-digit PIN). After
+// that they tap their name and enter their PIN, and everything they do is saved
+// under their name. The tablet locks after a few minutes untouched.
+let pin = { mode: "unlock", id: null, name: "", digits: "", first: "", msg: "", bad: false, forgot: false };
+const initials = (n) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
+function showWho() {
+  $("#pinPad").classList.remove("on"); $("#typer").classList.remove("on"); $("#locPick").classList.remove("on");
+  closeSheet(); closeCamera();
+  $("#hdrTitle").textContent = "Label Station";
+  show("who"); drawWho();
+}
+function drawWho() {
+  const people = S.people();
+  $("#whoGrid").innerHTML = people.map((p) => `<button class="whoname" data-id="${esc(p.id)}"><span class="av">${esc(initials(p.name))}</span>${esc(p.name)}</button>`).join("") +
+    `<button class="whoname add" id="whoAdd"><span class="av">+</span>Add me</button>`;
+  $("#whoGrid").querySelectorAll("[data-id]").forEach((b) => (b.onclick = () => {
+    const p = people.find((x) => x.id === b.dataset.id);
+    openPin("unlock", { id: p.id, name: p.name, email: p.email });
+  }));
+  $("#whoAdd").onclick = () => openAddMe();
+}
+/** Lock the tablet: save any count in progress, then "Who's using the tablet?". */
+async function lockNow(idle = false) {
+  if (!S.person) return;
+  if (takeItem && !(await takeSave(true))) { if (!idle) return; }
+  takeItem = null; bookItem = null; pickForTake = false;
+  if (takeMode === "damage") dmg = dmgFresh();
+  Object.keys(vals).forEach((k) => (vals[k] = ""));
+  hideOverlay();
+  S.lock();
+  showWho();
+}
+$("#whoBtn").onclick = () => lockNow();
+function openPin(mode, extra = {}) {
+  pin = { ...pin, mode, digits: "", msg: "", bad: false, ...extra };
+  drawPin(); $("#pinPad").classList.add("on");
+}
+function drawPin() {
+  $("#ppName").textContent = pin.mode === "unlock" ? pin.name : pin.mode === "choose" ? "Choose a 4-digit PIN" : "Enter the same PIN again";
+  $("#ppMsg").textContent = pin.msg || (pin.mode === "unlock" ? "Enter your PIN" : pin.mode === "choose" ? `For ${pin.name}. Don't use 1234 or your birthday.` : "");
+  $("#ppMsg").className = "pinmsg" + (pin.bad ? " bad" : "");
+  $("#ppDots").innerHTML = [0, 1, 2, 3].map((i) => `<span class="${i < pin.digits.length ? "on" : ""}"></span>`).join("");
+  $("#ppKeys [data-k=FORGOT]").style.visibility = pin.mode === "unlock" ? "visible" : "hidden";
+}
+function pinShake(msg) {
+  pin.digits = ""; pin.msg = msg; pin.bad = true; drawPin();
+  const d = $("#ppDots"); d.classList.remove("shake"); void d.offsetWidth; d.classList.add("shake");
+}
+let pinBusy = false;
+$("#ppKeys").onclick = async (e) => {
+  const b = e.target.closest("button"); if (!b || pinBusy) return;
+  const k = b.dataset.k || b.textContent.trim();
+  if (k === "FORGOT") { $("#pinPad").classList.remove("on"); openAddMe(pin.email, "Forgot your PIN? Sign in with your password to choose a new one."); return; }
+  if (k === "DEL") { pin.digits = pin.digits.slice(0, -1); drawPin(); return; }
+  if (!/^\d$/.test(k) || pin.digits.length >= 4) return;
+  pin.digits += k; pin.bad = false; drawPin();
+  if (pin.digits.length < 4) return;
+  pinBusy = true;
+  try { await pinEntered(); } finally { pinBusy = false; }
+};
+async function pinEntered() {
+  if (pin.mode === "unlock") {
+    pin.msg = "Checking…"; drawPin();
+    try {
+      await S.unlock(pin.id, pin.digits);
+      $("#pinPad").classList.remove("on"); home(); poke();
+    } catch (e) {
+      if (e.code === "needs-password") { $("#pinPad").classList.remove("on"); openAddMe(pin.email, e.message); }
+      else if (e.code === "wrong-pin") pinShake(e.message);
+      else { $("#pinPad").classList.remove("on"); overlay("Couldn't sign in", friendlyError(e), true); drawWho(); }
+    }
+    return;
+  }
+  if (pin.mode === "choose") {
+    if (/^(\d)\1{3}$/.test(pin.digits) || ["1234", "4321", "0123"].includes(pin.digits)) { pinShake("That PIN is too easy to guess. Choose another."); return; }
+    pin.first = pin.digits; pin.mode = "confirm"; pin.digits = ""; pin.msg = ""; drawPin(); return;
+  }
+  if (pin.digits !== pin.first) { pin.mode = "choose"; pinShake("Those didn't match. Choose your PIN again."); return; }
+  try {
+    const p = await S.finishPerson(pin.digits);
+    await S.unlock(p.id, pin.digits);
+    $("#pinPad").classList.remove("on");
+    overlay(`Hello ${p.name.split(" ")[0]} \u2713`, "Next time, just tap your name and enter your PIN.", false, true);
+    setTimeout(hideOverlay, 1600);
+    home(); poke();
+  } catch (e) {
+    $("#pinPad").classList.remove("on"); overlay("Couldn't save your PIN", friendlyError(e), true); showWho();
+  }
+}
+$("#ppCancel").onclick = async () => {
+  $("#pinPad").classList.remove("on");
+  if (pin.mode !== "unlock") { await S.cancelPerson(); showWho(); }
+};
+function openAddMe(email = "", note = "") {
+  $("#amTitle").textContent = email ? "Sign in with your password" : "Add yourself to this tablet";
+  $("#amSub").textContent = note || "Sign in once with your Payaz Stock email and password. Then you choose a 4-digit PIN to use from now on.";
+  $("#amEmail").value = email; $("#amEmail").readOnly = !!email; $("#amPass").value = "";
+  $("#hdrTitle").textContent = email ? "New PIN" : "Add me";
+  show("addme");
+  setTimeout(() => (email ? $("#amPass") : $("#amEmail")).focus(), 50);
+}
+$("#amNext").onclick = async () => {
+  const email = $("#amEmail").value.trim(), pass = $("#amPass").value;
+  if (!email || !pass) { overlay("Enter your email and password", "", true); return; }
+  overlay("Checking…", "", false, true);
+  try {
+    const p = await S.checkPerson(email, pass);
+    $("#amPass").value = ""; hideOverlay();
+    openPin("choose", { name: p.name, email, first: "" });
+  } catch (e) { overlay("Couldn't sign in", friendlyError(e), true); }
+};
+$("#amPass").onkeydown = (e) => { if (e.key === "Enter") $("#amNext").click(); };
+$("#amForgot").onclick = async () => {
+  const email = $("#amEmail").value.trim();
+  if (!email) { overlay("Type your email first", "Then tap this again and we'll email you a link to set a password.", true); return; }
+  try { await S.resetPassword(email); overlay("Check your email", `If ${email} has a Payaz Stock login, a link to set a password is on its way.`); }
+  catch (e) { overlay("Couldn't send the email", friendlyError(e), true); }
+};
+// Settings: how soon it locks, and who's on this tablet
+function drawPeopleSettings() {
+  $("#lockChips").innerHTML = [2, 5, 10, 15].map((m) => `<button class="chip ${settings.lockMins === m ? "on" : ""}" data-lock="${m}">Lock after ${m} min</button>`).join("");
+  $("#lockChips").querySelectorAll("[data-lock]").forEach((b) => (b.onclick = () => { saveSettings({ lockMins: +b.dataset.lock }); drawPeopleSettings(); poke(); }));
+  const people = S.people();
+  $("#peopleList").innerHTML = people.map((p) => `<div class="prow"><span><b>${esc(p.name)}</b> <small style="color:var(--muted)">${esc(p.email)}</small></span><button class="chip" data-rm="${esc(p.id)}">Remove</button></div>`).join("") || `<div class="hint">Nobody yet.</div>`;
+  $("#peopleList").querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => {
+    const p = people.find((x) => x.id === b.dataset.rm);
+    overlay(`Take ${p.name} off this tablet?`, "They can add themselves again with their email and password.", false, false,
+      { label: "Remove", run: async () => { const me = S.person && S.person.id === p.id; await S.removePerson(p.id); if (me) showWho(); else drawPeopleSettings(); } });
+  }));
+}
+S.forgetOldSignIn();
+showWho();
 
 // For automated tests
 window.__payaz = { renderLabel, printer, vals, loadLog, S };

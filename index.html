@@ -43,6 +43,34 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .screen { display: none; height: calc(100% - 72px); padding: 18px 20px; }
 .screen.on { display: flex; }
 
+#who.on { display: flex; flex-direction: column; align-items: center; gap: 18px; overflow-y: auto; }
+.whohead { margin: 18px 0 0; font-size: 34px; color: var(--navy); }
+.whogrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; width: 100%; max-width: 1100px; }
+.whoname { background: #fff; border-radius: var(--r); padding: 20px 12px; font-size: 22px; font-weight: 800; color: var(--navy); display: flex; flex-direction: column; align-items: center; gap: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.whoname .av { width: 70px; height: 70px; border-radius: 50%; background: var(--grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 900; }
+.whoname.add { background: #eef2f6; }
+.whoname.add .av { background: #c9d2dc; }
+.whohint { color: var(--muted); font-size: 18px; margin: 0; }
+#addme.on { display: flex; justify-content: center; }
+#pinPad { position: fixed; inset: 0; background: rgba(15,20,40,.55); display: none; align-items: center; justify-content: center; z-index: 8; }
+#pinPad.on { display: flex; }
+#pinPad .box { background: #fff; border-radius: 22px; padding: 26px 30px; width: 440px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.pinname { font-size: 28px; font-weight: 900; color: var(--navy); text-align: center; }
+.pinmsg { min-height: 24px; font-size: 18px; font-weight: 600; color: var(--muted); text-align: center; }
+.pinmsg.bad { color: #b3263a; }
+.pindots { display: flex; gap: 18px; margin: 4px 0 8px; }
+.pindots span { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--navy); }
+.pindots span.on { background: var(--navy); }
+.pindots.shake { animation: shake .35s; }
+@keyframes shake { 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
+.pinkeys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; }
+.pinkeys button { background: #eef2f6; font-size: 32px; font-weight: 800; min-height: 74px; color: var(--navy); }
+.pinkeys button.forgot { font-size: 15px; font-weight: 700; background: #fff; color: var(--teal); }
+.pinkeys button.del { background: #fde7e9; color: #b3263a; }
+#pinPad .ghost { width: 100%; min-height: 56px; font-size: 20px; }
+.whobtn { white-space: nowrap; }
+.peoplelist { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.peoplelist .prow { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f4f6f9; border-radius: 10px; padding: 8px 12px; font-size: 18px; }
 #home.on { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 16px; }
 .big { color: #fff; font-size: 32px; font-weight: 900; text-align: left; padding: 24px 28px; display: flex; flex-direction: column; justify-content: flex-end; line-height: 1.1; }
 .big small { display: block; font-size: 17px; font-weight: 500; margin-top: 8px; opacity: .92; }
@@ -253,11 +281,29 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   <div class="title" id="hdrTitle">Label Station</div>
   <button class="spotdue" id="spotBtn" style="display:none">Spot check due</button>
   <button class="pill bad" id="pill">Connect printer</button>
+  <button class="icon-btn whobtn" id="whoBtn" style="display:none">&#128100; <span id="whoName"></span> &middot; Switch</button>
   <button class="icon-btn" id="backBtn" style="display:none">&#8592; Back</button>
   <button class="icon-btn" id="setBtn">&#9881; Settings</button>
 </header>
 
-<section id="home" class="screen on">
+<section id="who" class="screen on">
+  <h2 class="whohead">Who's using the tablet?</h2>
+  <div class="whogrid" id="whoGrid"></div>
+  <p class="whohint">Tap your name and enter your PIN. Everything you do is saved under your name.</p>
+</section>
+
+<section id="addme" class="screen">
+  <div class="signin" style="display:flex">
+    <h2 id="amTitle">Add yourself to this tablet</h2>
+    <p id="amSub">Sign in once with your Payaz Stock email and password. Then you choose a 4-digit PIN to use from now on.</p>
+    <input class="inp" id="amEmail" type="email" autocomplete="username" placeholder="Email">
+    <input class="inp" id="amPass" type="password" autocomplete="current-password" placeholder="Password">
+    <button class="print" id="amNext" style="min-height:66px">Next: choose your PIN</button>
+    <button class="linkbtn" id="amForgot">Forgot your password, or normally use Google? Set a password</button>
+  </div>
+</section>
+
+<section id="home" class="screen">
   <button class="big log"    id="goLog">Log<small>Every order label printed, with warranty dates</small></button>
   <button class="big stockx" id="goStock">Stock<small>Stock take, add or remove stock by scanning</small></button>
   <button class="big stockl" id="goStockLabel">Stock Label<small>Shelf labels for your stock items</small></button>
@@ -414,6 +460,12 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
     <button class="chip" id="rotBtn">Flip label upside down: <span id="rotVal"></span></button>
     <button class="chip" id="reloadBtn" style="margin-left:10px">Restart app</button>
   </div>
+  <div class="card">
+    <h3>People and PINs</h3>
+    <div class="chips" id="lockChips"></div>
+    <div class="hint">The tablet goes back to "Who's using the tablet?" when nobody has touched it for this long. Tap your name at the top to switch person straight away.</div>
+    <div id="peopleList" class="peoplelist"></div>
+  </div>
 </section>
 
 <div id="sheet"><div class="box">
@@ -433,6 +485,16 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   <div class="meta" id="locFor"></div>
   <div class="chips" id="locChips"></div>
   <div class="btns"><button class="ghost" id="locType">&#9000; Type a new location</button><button class="ghost" id="locClose">Cancel</button></div>
+</div></div>
+<div id="pinPad"><div class="box">
+  <div class="pinname" id="ppName"></div>
+  <div class="pinmsg" id="ppMsg"></div>
+  <div class="pindots" id="ppDots"></div>
+  <div class="pinkeys" id="ppKeys">
+    <button>1</button><button>2</button><button>3</button><button>4</button><button>5</button><button>6</button>
+    <button>7</button><button>8</button><button>9</button><button class="forgot" data-k="FORGOT">Forgot PIN?</button><button>0</button><button class="del" data-k="DEL">&#9003;</button>
+  </div>
+  <button class="ghost" id="ppCancel">Cancel</button>
 </div></div>
 <div id="typer"><div class="sheet"><div class="shown" id="typerShown"></div><div class="kbd" id="typerKbd"></div></div></div>
 <div id="overlay"><div class="box" id="ovBox"><div class="msg" id="ovMsg"></div><div class="sub" id="ovSub"></div><div class="btnrow"><button id="ovAlt" class="alt" style="display:none"></button><button id="ovBtn">OK</button></div></div></div>
