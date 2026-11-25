@@ -10,7 +10,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const printer = new Printer();
 
-// The two label screens. Box types: "pad" = number keypad (with PZ and RR),
+// The two label screens. Box types: "pad" = number keypad (with PZ, and RR for RR-2026-0004),
 // "scan" = barcode scanner/camera (or type it), "text" = on-screen keyboard.
 const MODES = {
   order: {
@@ -46,7 +46,7 @@ document.addEventListener("focusin", (e) => {
 /* ---------- settings (saved on this tablet) ---------- */
 // stockOrient: how stock labels sit on the label: "upright", or landscape turned "right" / "left"
 // lockMins: back to "Who's using the tablet?" after this many minutes untouched
-const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockOrient: "upright", lockMins: 5 };
+const DEFAULTS = { widthMm: 40, heightMm: 30, density: 4, rotate: false, stockCode: "barcode", stockOrient: "upright", lockMins: 5, prodSize: 2 };
 let settings = { ...DEFAULTS };
 try {
   const saved = JSON.parse(localStorage.getItem("payaz-settings") || "{}");
@@ -57,6 +57,7 @@ try {
 } catch (e) {}
 if (!["upright", "right", "left"].includes(settings.stockOrient)) settings.stockOrient = "upright";
 if (![2, 5, 10, 15].includes(settings.lockMins)) settings.lockMins = 5;
+if (![1, 2, 3, 4].includes(settings.prodSize)) settings.prodSize = 2; // Production tile size: 1 smallest .. 4 biggest
 function saveSettings(change) {
   Object.assign(settings, change);
   settings.widthMm = Math.max(20, Math.min(50, +settings.widthMm));
@@ -155,6 +156,11 @@ function render() {
 
 /* ---------- typing ---------- */
 const maxLen = (k) => (k === "order" ? 30 : 40);
+// RR-2026-0004: "RR-", the 4-digit year, then a dash once the year is complete
+function rrFormat(digits, typing) {
+  const year = digits.slice(0, 4), rest = digits.slice(4);
+  return "RR-" + year + (rest ? "-" + rest : year.length === 4 && typing ? "-" : "");
+}
 function press(key) {
   poke();
   const f = fieldOf(active);
@@ -164,12 +170,18 @@ function press(key) {
     setActive(after.find((k) => !vals[k]) || after[0] || active);
     return;
   }
-  if (key === "DEL") v = v.slice(0, -1);
+  if (key === "DEL") { v = v.slice(0, -1); if (v === "RR") v = ""; }
   else if (key === "CASE") { caseMode = nextCase(); render(); return; }
-  // PZ / RR go on the end of an order number; tapping the other one swaps it
-  else if (key === "PZ" || key === "RR") { v = v.replace(/(PZ|RR)$/, "") + key; }
+  // RR orders look like RR-2026-0004: RR goes at the start, the dashes go in by
+  // themselves. Tapping RR again takes it off. PZ goes on the end (48374PZ).
+  else if (key === "RR") { v = v.startsWith("RR-") ? v.slice(3).replace(/-/g, "") : rrFormat(v.replace(/\D/g, ""), false); }
+  else if (key === "PZ") { if (!v.startsWith("RR-")) v = v.replace(/PZ$/, "") + "PZ"; }
+  else if (active === "order" && v.startsWith("RR-")) {
+    const digits = v.slice(3).replace(/\D/g, "");
+    if (/^\d$/.test(key) && digits.length < 10) v = rrFormat(digits + key, true);
+  }
   else if (v.length < maxLen(active)) {
-    if (active === "order" && /(PZ|RR)$/.test(v)) return;
+    if (active === "order" && /PZ$/.test(v)) return;
     if (key === "SPACE") key = " ";
     if (f.type !== "text") key = key.toUpperCase();
     else if (/^[a-z]$/i.test(key)) key = capsNext(v) ? key.toUpperCase() : key.toLowerCase();
@@ -576,7 +588,7 @@ function overlay(msg, sub, isErr, noBtn, alt) {
   $("#ovMsg").textContent = msg; $("#ovSub").textContent = sub || "";
   $("#ovBox").classList.toggle("err", !!isErr);
   $("#ovBtn").style.display = noBtn ? "none" : ""; $("#overlay").classList.add("on");
-  $("#ovBtn").textContent = alt ? "Cancel" : "OK";
+  $("#ovBtn").textContent = alt ? alt.closeLabel || "Cancel" : "OK";
   $("#ovAlt").style.display = alt ? "" : "none";
   if (alt) { $("#ovAlt").textContent = alt.label; $("#ovAlt").onclick = () => { hideOverlay(); alt.run(); }; }
 }
@@ -1575,6 +1587,8 @@ async function openProd() {
   drawProd();
 }
 function drawProd() {
+  $("#prodGrid").className = `prodgrid size-${settings.prodSize}`;
+  $("#prodSmaller").disabled = settings.prodSize <= 1; $("#prodBigger").disabled = settings.prodSize >= 4;
   $("#prodGrid").innerHTML = prodTiles.map((t) => {
     const n = canBuild(t), hasParts = (t.recipe || []).length > 0;
     const serialPart = (t.recipe || []).some((x) => { const it = S.items.find((i) => i.id === x.item_id); return it && it.tracking_type === "serial"; });
@@ -1627,8 +1641,8 @@ $("#bsBuild").onclick = async () => {
     $("#buildSheet").classList.remove("on");
     prodSession.unshift({ id: log.id, name: log.tile_name, qty: log.quantity_built, what: `${log.deductions.length} parts off stock`, time: hhmm() });
     drawProd();
-    overlay(`Built ${log.quantity_built} \u00d7 ${log.tile_name} \u2713`, `${log.deductions.map((d) => `${d.item_name} \u2212${d.quantity_deducted}`).join("\n")}\n\nNow do the tablet and card reader on the Order Label.`, false, false,
-      { label: "Next: Order Label", run: () => openMode("order") });
+    overlay(`Built ${log.quantity_built} \u00d7 ${log.tile_name} \u2713`, `Saved: these parts have been taken off stock and the build is logged.\n${log.deductions.map((d) => `${d.item_name} \u2212${d.quantity_deducted}`).join("\n")}\n\nBuild more, or go on to the tablet and card reader on the Order Label.`, false, false,
+      { label: "Next: Order Label", closeLabel: "Back to Production", run: () => openMode("order") });
   } catch (e) {
     overlay("Couldn't build", friendlyError(e), true);
     try { await S.refresh(); } catch (e2) {}
@@ -1645,6 +1659,8 @@ async function undoBuildEntry(x) {
   } });
 }
 $("#prodRefresh").onclick = () => openProd();
+$("#prodSmaller").onclick = () => { saveSettings({ prodSize: Math.max(1, settings.prodSize - 1) }); drawProd(); poke(); };
+$("#prodBigger").onclick = () => { saveSettings({ prodSize: Math.min(4, settings.prodSize + 1) }); drawProd(); poke(); };
 $("#prodOrder").onclick = () => openMode("order");
 
 /* ---------- who's using the tablet (PIN sign-in) ---------- */
