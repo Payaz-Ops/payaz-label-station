@@ -73,12 +73,21 @@ function drawBarcode(ctx, text, x0, y0, x1, y1) {
   let m = Math.floor(avail / (mods.length + 2 * quiet));
   // A smaller (still scannable) quiet zone if that keeps bars 2 dots wide
   if (m < 2 && Math.floor(avail / (mods.length + 12)) >= 2) { quiet = 6; m = Math.floor(avail / (mods.length + 2 * quiet)); }
-  if (m < 1) { quiet = 4; m = Math.floor(avail / (mods.length + 2 * quiet)); }
+  // Still too long for 2-dot bars (e.g. a 17-digit SumUp serial on a 40 mm label): use
+  // the label's side margins too, keeping ~0.5 mm from each edge and a 4-unit quiet zone
+  if (m < 2) {
+    const ext = Math.max(0, x0 - 4);
+    if (Math.floor((x1 - x0 + 2 * ext) / (mods.length + 8)) >= 2) {
+      x0 -= ext; x1 += ext; quiet = 4;
+      m = Math.floor((x1 - x0) / (mods.length + 2 * quiet));
+    }
+  }
+  if (m < 1) { quiet = 4; m = Math.floor((x1 - x0) / (mods.length + 2 * quiet)); }
   if (m < 1) return false;
   lastBarModule = lastBarModule ? Math.min(lastBarModule, m) : m;
   m = Math.min(m, 4);
   const width = mods.length * m;
-  const left = x0 + Math.floor((avail - width) / 2);
+  const left = x0 + Math.floor((x1 - x0 - width) / 2);
   // Thermal printers spread each black bar a little (dot gain), filling in the
   // thin gaps. Print every bar slightly narrower so it comes out the right width.
   const thin = m >= 2 ? Math.max(1, Math.floor(m / 2)) : 0;
