@@ -93,7 +93,7 @@ function openMode(m) {
   mode = m; copies = 1; typing = false;
   $("#fields").innerHTML = fields().map((f) =>
     `<button class="field" data-f="${f.k}"><div class="lbl">${f.label}</div><div class="val"></div>` +
-    (mode === "order" && f.type === "scan" ? `<div class="sstat" data-s="${f.k}"></div>` : "") + `</button>`).join("");
+    (mode === "order" && (f.type === "scan" || f.k === "order") ? `<div class="sstat" data-s="${f.k}"></div>` : "") + `</button>`).join("");
   $("#fields").querySelectorAll(".field").forEach((b) => (b.onclick = () => setActive(b.dataset.f)));
   $("#fields").style.cssText = "display:flex;flex-direction:column;gap:8px";
   setActive(fields()[0].k);
@@ -127,7 +127,11 @@ function render() {
     if (f.k === "sumup" && val.length > 3)
       v.innerHTML = `<span style="font-weight:500">${esc(val.slice(0, -3))}</span>${esc(val.slice(-3))}`;
     const st = b.querySelector(".sstat");
-    if (st) {
+    if (st && f.k === "order") {
+      const p = priorPrints(val)[0];
+      st.textContent = p ? `\u26a0 Already printed ${whenText(p.ts)}${p.sumup || p.tablet ? ` (${[p.sumup && `reader ${p.sumup}`, p.tablet && `tablet ${p.tablet}`].filter(Boolean).join(", ")})` : ""}` : "";
+      st.className = "sstat" + (p ? " warn" : "");
+    } else if (st) {
       const info = val && serialInfo[f.k] && serialInfo[f.k].serial === val ? serialInfo[f.k] : null;
       st.textContent = info ? info.text : "";
       st.className = "sstat" + (info ? " " + info.tone : "");
@@ -496,7 +500,25 @@ async function doPrint(kind, values, n, log = false) {
   }
 }
 
-$("#printBtn").onclick = async () => {
+// Order labels already printed for an order number (from the Log on this tablet), newest first
+function priorPrints(order) {
+  const o = String(order || "").trim().toUpperCase();
+  return o ? loadLog().filter((e) => String(e.order || "").trim().toUpperCase() === o).sort((a, b) => b.ts.localeCompare(a.ts)) : [];
+}
+function whenText(ts) {
+  const d = new Date(ts), t = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(ts).setHours(0, 0, 0, 0)) / 86400000);
+  return days === 0 ? `today at ${t}` : days === 1 ? `yesterday at ${t}` : `on ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`;
+}
+$("#printBtn").onclick = () => {
+  const prior = mode === "order" ? priorPrints(vals.order) : [];
+  if (!prior.length) return printNow();
+  const p = prior[0];
+  overlay(`Order ${vals.order.trim()} has already been printed`,
+    `Printed ${whenText(p.ts)}${prior.length > 1 ? ` (${prior.length} times in all)` : ""}.\nCard reader: ${p.sumup || "none"} \u00b7 Tablet: ${p.tablet || "none"}\n\nOnly print again if the label needs replacing.`,
+    true, false, { label: "Print again", run: () => printNow() });
+};
+async function printNow() {
   const values = mode === "stock"
     ? { name: vals.name, location: vals.location, code: vals.code }
     : { order: vals.order, sumup: vals.sumup, tablet: vals.tablet };
@@ -513,7 +535,7 @@ $("#printBtn").onclick = async () => {
     overlay("Printed ✓", r.done.join("\n") || "Added to the log", false, true);
   }
   setTimeout(() => { hideOverlay(); home(); }, 1200);
-};
+}
 $("#clearBtn").onclick = () => { vals[active] = ""; if (active in serialInfo) serialInfo[active] = null; render(); };
 $("#cMinus").onclick = () => { copies = Math.max(1, copies - 1); render(); };
 $("#cPlus").onclick = () => { copies = Math.min(20, copies + 1); render(); };
