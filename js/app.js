@@ -10,7 +10,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const printer = new Printer();
 
-// The two label screens. Box types: "pad" = number keypad (with PZ),
+// The two label screens. Box types: "pad" = number keypad (with PZ and RR),
 // "scan" = barcode scanner/camera (or type it), "text" = on-screen keyboard.
 const MODES = {
   order: {
@@ -152,9 +152,10 @@ function press(key) {
   let v = vals[active];
   if (key === "DEL") v = v.slice(0, -1);
   else if (key === "CASE") { caseMode = nextCase(); render(); return; }
-  else if (key === "PZ") { if (!v.endsWith("PZ")) v += "PZ"; }
+  // PZ / RR go on the end of an order number; tapping the other one swaps it
+  else if (key === "PZ" || key === "RR") { v = v.replace(/(PZ|RR)$/, "") + key; }
   else if (v.length < maxLen(active)) {
-    if (active === "order" && v.endsWith("PZ")) return;
+    if (active === "order" && /(PZ|RR)$/.test(v)) return;
     if (key === "SPACE") key = " ";
     if (f.type !== "text") key = key.toUpperCase();
     else if (/^[a-z]$/i.test(key)) key = capsNext(v) ? key.toUpperCase() : key.toLowerCase();
