@@ -245,7 +245,7 @@ async function checkSerial(k) { // k can change if the unit is moved to its prop
  *  Returns { problems: [text], done: [text] }. */
 async function recordDispatch(values) {
   const boxes = [["sumup", "Card reader"], ["tablet", "Tablet"]].filter(([k]) => values[k]);
-  const out = { problems: [], done: [] };
+  const out = { problems: [], done: [], queued: [] };
   if (!boxes.length) return out;
   if (!values.order) return out; // a serial label on its own, not an order
   if (!stockLinked() || !S.dispatchSerial) {
@@ -254,18 +254,82 @@ async function recordDispatch(values) {
   }
   for (const [k, name] of boxes) {
     try {
-      const r = await S.dispatchSerial(values[k], values.order);
+      if (!navigator.onLine || out.queued.length) throw Object.assign(new Error("No internet"), { code: "unavailable" }); // don't wait for another timeout
+      const r = await withTimeout(S.dispatchSerial(values[k], values.order));
       if (r.kind === "dispatched") out.done.push(`${r.unit.item_name || name} ${values[k]} sent on order ${values.order}`);
       else if (r.kind === "same_order") out.done.push(`${name} ${values[k]} was already on this order`);
       else if (r.kind === "not_booked_in") out.done.push(`${name} ${values[k]} recorded on order ${values.order}${r.unit && r.unit.item_id ? ` (${r.unit.item_name})` : ""}. It wasn't booked in, so the stock count hasn't changed.`);
       else if (r.kind === "already_sent") out.problems.push(`${r.unit.item_name || name} ${values[k]} was already sent on order ${r.unit.order_number}. A manager has been told.`);
       else out.problems.push(`${r.unit.item_name || name} ${values[k]} is recorded as ${r.unit.status} in Payaz Stock. A manager has been told.`);
     } catch (e) {
-      out.problems.push(`${name} ${values[k]} wasn't recorded: ${friendlyError(e)}. Print the label again when the internet is back.`);
+      if (isNetworkError(e)) {
+        // No internet: keep it and send it when the connection is back
+        queueAdd({ serial: values[k], order: values.order, name, personId: S.person && S.person.id });
+        out.queued.push(`${name} ${values[k]}`);
+      } else out.problems.push(`${name} ${values[k]} wasn't recorded: ${friendlyError(e)}. Tell a manager.`);
     }
   }
   return out;
 }
+
+/* ---------- waiting to send (Order Label records made without internet) ---------- */
+// Saved on the tablet and sent automatically when the internet is back (checked every
+// 30 seconds, when the connection returns, and when someone signs in), under the
+// person who printed the label. Sending twice is safe: the second time finds the unit
+// already on that order.
+const QUEUE_KEY = "payaz-dispatch-queue";
+const queueLoad = () => { try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; } catch (e) { return []; } };
+const queueSave = (q) => { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch (e) {} drawQueue(); };
+function queueAdd(x) {
+  const q = queueLoad().filter((y) => !(y.serial === x.serial && y.order === x.order));
+  q.push({ ...x, at: new Date().toISOString() }); queueSave(q);
+}
+const NETWORK_CODES = ["unavailable", "deadline-exceeded", "auth/network-request-failed", "timeout", "aborted", "internal", "resource-exhausted", "locked"];
+const isNetworkError = (e) => !navigator.onLine || NETWORK_CODES.includes(e && e.code) || /offline|network|fetch/i.test((e && e.message) || "");
+function withTimeout(p, ms = 12000) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error("No answer from Payaz Stock"), { code: "timeout" })), ms))]);
+}
+let queueBusy = false;
+async function queueSend() {
+  if (queueBusy || !queueLoad().length || !navigator.onLine) return;
+  queueBusy = true;
+  try {
+    for (const x of queueLoad()) {
+      try {
+        const r = await withTimeout(S.dispatchSerial(x.serial, x.order, x.personId));
+        // Sent (any answer from Payaz Stock counts: problems are flagged to managers there)
+        queueSave(queueLoad().filter((y) => !(y.serial === x.serial && y.order === x.order)));
+        if (r.kind !== "dispatched" && r.kind !== "same_order" && r.kind !== "not_booked_in")
+          queueNote(`${x.name} ${x.serial} (order ${x.order}): ${r.kind === "already_sent" ? `already sent on order ${r.unit.order_number}` : `recorded as ${r.unit.status}`}. Managers have been told.`);
+      } catch (e) {
+        if (isNetworkError(e)) break; // still no internet: try again later
+        queueSave(queueLoad().filter((y) => !(y.serial === x.serial && y.order === x.order)));
+        queueNote(`${x.name} ${x.serial} (order ${x.order}) couldn't be recorded: ${friendlyError(e)}. Tell a manager.`);
+      }
+    }
+  } finally { queueBusy = false; drawQueue(); }
+}
+const queueNotes = [];
+function queueNote(t) { queueNotes.push(t); drawQueue(); }
+function drawQueue() {
+  const n = queueLoad().length, btn = $("#queueBtn");
+  btn.style.display = n || queueNotes.length ? "" : "none";
+  btn.classList.toggle("bad", !n && queueNotes.length > 0);
+  btn.textContent = n ? `\u23f3 ${n} waiting to send` : `\u26a0 ${queueNotes.length} to check`;
+}
+$("#queueBtn").onclick = async () => {
+  const q = queueLoad();
+  const list = q.map((x) => `${x.name} ${x.serial} on order ${x.order} (${new Date(x.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })})`);
+  overlay(q.length ? `${q.length} waiting to send to Payaz Stock` : "Sent, but check these",
+    [...list, ...(q.length ? ["", "They'll be sent automatically when the internet is back. No need to print again."] : []), ...queueNotes].join("\n"),
+    !q.length, false, q.length ? { label: "Try now", run: () => queueSend() } : null);
+  if (!q.length) queueNotes.length = 0;
+  drawQueue();
+};
+window.addEventListener("online", () => queueSend());
+setInterval(queueSend, 30000);
+S.watch(() => queueSend());
+drawQueue(); setTimeout(queueSend, 3000);
 
 // Put a scanned code in the right box.
 const boxFor = (code) => /^\d{10,20}$/.test(code) ? "sumup" : /[A-Z]/.test(code) && /\d/.test(code) && code.length >= 6 ? "tablet" : null;
@@ -440,6 +504,7 @@ $("#printBtn").onclick = async () => {
   if (mode === "order" && (values.sumup || values.tablet) && values.order) {
     overlay("Printed ✓", "Recording in Payaz Stock…", false, true);
     const r = await recordDispatch(values);
+    if (r.queued.length) r.problems.push(`No internet: ${r.queued.join(" and ")} will be recorded in Payaz Stock automatically as soon as it's back. No need to print again.`);
     if (r.problems.length) {
       overlay("Printed, but check this", [...r.problems, ...r.done].join("\n"), true);
       $("#ovBtn").onclick = () => { hideOverlay(); $("#ovBtn").onclick = hideOverlay; home(); };

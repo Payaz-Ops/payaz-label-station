@@ -165,6 +165,23 @@ export const stock = {
     return this.person;
   },
 
+  /** The database and person to record something under: the given person (if
+   *  they're still on this tablet and signed in), else whoever is using it now. */
+  async _ctx(personId) {
+    if (personId && (!this.person || this.person.id !== personId)) {
+      const p = loadPeople().find((x) => x.id === personId);
+      if (p) {
+        const inst = instance(p.appName);
+        await inst.auth.authStateReady();
+        const u = inst.auth.currentUser;
+        if (u && u.uid === p.id) return { db: inst.db, who: { id: u.uid, name: p.name } };
+      }
+    }
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    return { db, who: { id: this.user.uid, name: this.userName } };
+  },
+
   /** Back to "Who's using the tablet?". Each person stays signed in underneath. */
   lock() {
     const was = !!db;
@@ -407,17 +424,17 @@ export const stock = {
    * as sent on the order, without changing the stock count.
    * Returns { kind: "dispatched" | "same_order" | "already_sent" | "not_in_stock" | "not_booked_in", unit }.
    */
-  async dispatchSerial(rawSerial, orderNumber) {
-    init();
-    if (!this.user) throw new Error("Sign in to the stock app first.");
+  async dispatchSerial(rawSerial, orderNumber, personId = null) {
+    // Recorded under the person who printed the label (a retry may run later,
+    // while someone else is using the tablet)
+    const { db, who } = await this._ctx(personId);
     const serial = this.normaliseSerial(rawSerial), key = this.serialKey(rawSerial);
     const order = String(orderNumber || "").trim();
-    const who = { id: this.user.uid, name: this.userName };
     const unitRef = doc(db, "serial_units", key);
     // Never booked in? Work out the product from similar serial numbers first
     // (a search can't run inside the save below).
     let guess = null;
-    if (!(await getDoc(unitRef)).exists()) guess = await this.guessSerialItem(serial).catch(() => null);
+    if (!(await getDoc(unitRef)).exists()) guess = await this.guessSerialItem(serial, db).catch(() => null);
     let result;
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(unitRef);
@@ -487,11 +504,11 @@ export const stock = {
   /** The product a serial number most likely belongs to: the one whose booked-in
    *  serials share the longest start with it (same length, at least 4 characters
    *  in common, and only one product that close). null if it can't tell. */
-  async guessSerialItem(rawSerial) {
+  async guessSerialItem(rawSerial, d = db) {
     const key = this.serialKey(rawSerial);
     if (key.length < 6) return null;
     const pre = key.slice(0, 4);
-    const snap = await getDocs(query(collection(db, "serial_units"), where("serial_key", ">=", pre), where("serial_key", "<", pre + "\uf8ff"), limit(400)));
+    const snap = await getDocs(query(collection(d, "serial_units"), where("serial_key", ">=", pre), where("serial_key", "<", pre + "\uf8ff"), limit(400)));
     let best = 0, found = new Map();
     snap.forEach((d) => {
       const u = d.data();
