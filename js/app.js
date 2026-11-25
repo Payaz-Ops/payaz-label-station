@@ -204,7 +204,7 @@ $("#typeBtn").onclick = () => { typing = true; render(); };
 const serialInfo = { sumup: null, tablet: null };
 const stockLinked = () => !!(S.user && S.isStaff && S.lookupSerial);
 const shortDate = (iso) => (iso ? new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "");
-async function checkSerial(k) {
+async function checkSerial(k) { // k can change if the unit is moved to its proper box
   const serial = vals[k];
   if (!serial) { serialInfo[k] = null; return; }
   if (!stockLinked()) {
@@ -216,6 +216,19 @@ async function checkSerial(k) {
   let info;
   try {
     const u = await S.lookupSerial(serial);
+    // In the wrong box for its product? Move it (or say so if that box is taken)
+    if (u && u.item_id && vals[k] === serial) {
+      const right = boxForUnit(u);
+      if (right !== k) {
+        if (!vals[right]) {
+          vals[right] = serial; vals[k] = ""; serialInfo[k] = null; k = right;
+          if (active === right || !vals[active]) active = ["sumup", "tablet"].find((f) => !vals[f]) || right;
+        } else {
+          serialInfo[k] = { serial, tone: "warn", text: `This is a ${u.item_name}: it belongs in the ${right === "sumup" ? "card reader" : "tablet"} box.` };
+          render(); return;
+        }
+      }
+    }
     if (!u) info = { tone: "info", text: "Not booked in yet. It will still be recorded on this order (stock count won't change)." };
     else if (u.status === "in_stock") info = { tone: "ok", text: `✓ ${u.item_name}, in stock` };
     else if (u.status === "dispatched") info = vals.order && u.order_number === vals.order
@@ -255,6 +268,12 @@ async function recordDispatch(values) {
 }
 
 // Put a scanned code in the right box.
+const boxFor = (code) => /^\d{10,20}$/.test(code) ? "sumup" : /[A-Z]/.test(code) && /\d/.test(code) && code.length >= 6 ? "tablet" : null;
+// Which box a booked-in unit belongs in, from its product in Payaz Stock
+function boxForUnit(u) {
+  const item = S.items.find((i) => i.id === u.item_id) || {};
+  return /sum ?up|card ?reader|reader/i.test(`${u.item_name || ""} ${item.name || ""} ${item.category || ""}`) ? "sumup" : "tablet";
+}
 function acceptScan(code) {
   code = code.trim().replace(/[^\x20-\x7E]/g, "").slice(0, 40);
   if (!active || code.length < 2) return;
@@ -263,7 +282,11 @@ function acceptScan(code) {
     active = !vals.name ? "name" : !vals.location ? "location" : "code";
   } else {
     code = code.toUpperCase();
-    let target = active;
+    if (code === vals.sumup || code === vals.tablet) { typing = false; render(); return; } // scanned twice
+    // Scans go in the right box whichever is selected: SumUp card reader serials are
+    // all numbers (e.g. 17 digits), tablet serials have letters. Payaz Stock's record
+    // corrects it after the check below if a product doesn't follow that pattern.
+    let target = boxFor(code) || active;
     if (target === "order") target = !vals.sumup ? "sumup" : "tablet";
     vals[target] = code;
     active = ["sumup", "tablet"].find((f) => !vals[f]) || target; // next empty scan box
