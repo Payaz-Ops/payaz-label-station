@@ -181,7 +181,7 @@ function press(key) {
   }
   vals[active] = v; render();
 }
-$("#keypad").onclick = (e) => { const b = e.target.closest("button"); if (b) press(b.dataset.k || b.textContent); };
+onKey($("#keypad"), (b) => press(b.dataset.k || b.textContent));
 
 // Letter case for typed names: "Abc" = capital at the start of each word (default),
 // "ABC" = all capitals, "abc" = all small.
@@ -190,20 +190,45 @@ const capsNext = (v) => caseMode === "ABC" || (caseMode === "Abc" && (!v || /[\s
 
 // On-screen keyboard (letters, numbers, space and a few symbols)
 const ROWS = ["1234567890", "QWERTYUIOP", "ASDFGHJKL-", "ZXCVBNM/."];
+/* On-screen keys react the moment they're touched (like a real keyboard), so a tap
+   that slides a little or is held a moment still counts. Each touch counts once:
+   the click that follows it is ignored, so it can't also press whatever is under
+   the finger if the key closed a pop-up. */
+let swallowPointer = null;
+document.addEventListener("pointerdown", () => { swallowPointer = null; }, true);
+document.addEventListener("click", (e) => {
+  if (swallowPointer !== null && e.pointerId === swallowPointer) { e.preventDefault(); e.stopPropagation(); swallowPointer = null; }
+}, true);
+function onKey(el, fn) {
+  el.addEventListener("pointerdown", (e) => {
+    const b = e.target.closest("button");
+    if (!b || !el.contains(b) || b.disabled) return;
+    e.preventDefault();
+    swallowPointer = e.pointerId;
+    b.classList.add("hit"); setTimeout(() => b.classList.remove("hit"), 140);
+    fn(b);
+  });
+}
 function buildKbd(el, { scanKey = false, doneKey = false, current = null } = {}) {
   const typed = current !== null ? current : active && fieldOf(active).type === "text" ? vals[active] : "";
   const big = current === null && active && fieldOf(active).type !== "text" ? true : capsNext(typed);
   const shown = (c) => (/[A-Z]/.test(c) && !big ? c.toLowerCase() : c);
+  const sig = `${scanKey}|${doneKey}`;
+  if (el.dataset.sig === sig) { // same keys: just change capitals / small letters (a key under a finger isn't replaced)
+    el.querySelectorAll("[data-c]").forEach((b) => { const t = shown(b.dataset.c); if (b.textContent !== t) b.textContent = t; });
+    el.querySelector("[data-k=CASE]").textContent = caseMode;
+    return;
+  }
+  el.dataset.sig = sig;
   el.innerHTML = ROWS.map((r) => `<div class="row">${[...r].map((c) => `<button data-c="${c}">${shown(c)}</button>`).join("")}</div>`).join("") +
     `<div class="row"><button class="wide" data-k="CASE">${caseMode}</button>` +
     `<button style="flex:4" data-k="SPACE">space</button><button class="wide del" data-k="DEL">&#9003;</button>` +
     (scanKey ? `<button class="wide" data-k="SCAN">Scan instead</button>` : "") +
     (doneKey ? `<button class="wide" data-k="DONE" style="background:var(--teal);color:#fff">Done</button>` : "") + `</div>`;
 }
-$("#kbd").onclick = (e) => {
-  const b = e.target.closest("button"); if (!b) return;
+onKey($("#kbd"), (b) => {
   if (b.dataset.k === "SCAN") { typing = false; render(); } else press(b.dataset.k || b.dataset.c);
-};
+});
 $("#typeBtn").onclick = () => { typing = true; render(); };
 
 /* ---------- serial numbers in Payaz Stock ---------- */
@@ -1500,8 +1525,7 @@ function drawTyper() {
   $("#typerShown").textContent = typerValue() || " ";
   buildKbd($("#typerKbd"), { doneKey: true, current: typerValue() });
 }
-$("#typerKbd").onclick = (e) => {
-  const b = e.target.closest("button"); if (!b) return;
+onKey($("#typerKbd"), (b) => {
   const k = b.dataset.k, c = b.dataset.c;
   if (k === "DONE") {
     $("#typer").classList.remove("on");
@@ -1516,7 +1540,7 @@ $("#typerKbd").onclick = (e) => {
   else if (k === "SPACE") typerSet(cur + " ");
   else typerSet(cur + (capsNext(cur) ? c : c.toLowerCase()));
   drawTyper();
-};
+});
 $("#typer").onclick = (e) => { if (e.target.id === "typer") $("#typer").classList.remove("on"); };
 $("#backBtn").onclick = async () => {
   if ($("#addme").classList.contains("on")) { await S.cancelPerson(); return showWho(); }
@@ -1704,8 +1728,8 @@ function pinShake(msg) {
   const d = $("#ppDots"); d.classList.remove("shake"); void d.offsetWidth; d.classList.add("shake");
 }
 let pinBusy = false;
-$("#ppKeys").onclick = async (e) => {
-  const b = e.target.closest("button"); if (!b || pinBusy) return;
+onKey($("#ppKeys"), async (b) => {
+  if (pinBusy) return;
   const k = b.dataset.k || b.textContent.trim();
   if (k === "FORGOT") { $("#pinPad").classList.remove("on"); openAddMe(pin.email, "Forgot your PIN? Sign in with your password to choose a new one."); return; }
   if (k === "DEL") { pin.digits = pin.digits.slice(0, -1); drawPin(); return; }
@@ -1714,7 +1738,7 @@ $("#ppKeys").onclick = async (e) => {
   if (pin.digits.length < 4) return;
   pinBusy = true;
   try { await pinEntered(); } finally { pinBusy = false; }
-};
+});
 async function pinEntered() {
   if (pin.mode === "unlock") {
     pin.msg = "Checking…"; drawPin();
