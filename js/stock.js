@@ -31,6 +31,14 @@ function init() {
   db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true }, DATABASE);
 }
 
+// Damage reasons, as in Payaz Stock's Report Damage form
+export const DAMAGE_REASONS = {
+  damaged_production: "Damaged in production",
+  broken_component: "Broken or faulty part",
+  inventory_discrepancy: "Count mismatch",
+  missing_loss: "Missing or lost",
+  other: "Other",
+};
 const rid = (prefix) => prefix + "_" + Math.random().toString(36).substring(2, 11);
 
 const FRIENDLY = {
@@ -294,6 +302,8 @@ export const stock = {
    * Mark a unit as sent on an order: its record, stock down by 1 (with a movement)
    * and a history entry, in one transaction. Problems (never booked in, already
    * sent on another order, damaged) are written to the history for managers.
+   * A unit that was never booked in (missed when stock was added) is still recorded
+   * as sent on the order, without changing the stock count.
    * Returns { kind: "dispatched" | "same_order" | "already_sent" | "not_in_stock" | "not_booked_in", unit }.
    */
   async dispatchSerial(rawSerial, orderNumber) {
@@ -303,6 +313,10 @@ export const stock = {
     const order = String(orderNumber || "").trim();
     const who = { id: this.user.uid, name: this.userName };
     const unitRef = doc(db, "serial_units", key);
+    // Never booked in? Work out the product from similar serial numbers first
+    // (a search can't run inside the save below).
+    let guess = null;
+    if (!(await getDoc(unitRef)).exists()) guess = await this.guessSerialItem(serial).catch(() => null);
     let result;
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(unitRef);
@@ -314,8 +328,17 @@ export const stock = {
         tx.set(doc(db, "serial_events", id), e);
       };
       if (!snap.exists()) {
-        event({ type: "not_booked_in", note: "Sent on an order but never booked in" });
-        result = { kind: "not_booked_in", unit: null };
+        const unit = {
+          serial_key: key, serial_number: serial,
+          item_id: guess ? guess.item_id : "", item_name: guess ? guess.item_name : "Unknown product", item_sku: guess ? guess.item_sku : "",
+          status: "dispatched", received_at: now, received_by_id: who.id, received_by_name: who.name, received_mode: "not_booked_in",
+          order_number: order, dispatched_at: now, dispatched_by_id: who.id, dispatched_by_name: who.name, dispatched_app: "Label Station",
+          note: guess ? "Never booked in. Product worked out from similar serial numbers." : "Never booked in. Product not known.",
+          updated_at: now,
+        };
+        tx.set(unitRef, unit);
+        event({ item_id: unit.item_id, item_name: guess ? unit.item_name : "", type: "not_booked_in", note: "Sent on an order but never booked in: recorded on the order, stock count not changed" });
+        result = { kind: "not_booked_in", unit };
         return;
       }
       const unit = snap.data();
@@ -358,6 +381,98 @@ export const stock = {
       result = { kind: "dispatched", unit: { ...unit, ...changes } };
     });
     return result;
+  },
+
+  /** The product a serial number most likely belongs to: the one whose booked-in
+   *  serials share the longest start with it (same length, at least 4 characters
+   *  in common, and only one product that close). null if it can't tell. */
+  async guessSerialItem(rawSerial) {
+    const key = this.serialKey(rawSerial);
+    if (key.length < 6) return null;
+    const pre = key.slice(0, 4);
+    const snap = await getDocs(query(collection(db, "serial_units"), where("serial_key", ">=", pre), where("serial_key", "<", pre + "\uf8ff"), limit(400)));
+    let best = 0, found = new Map();
+    snap.forEach((d) => {
+      const u = d.data();
+      if (!u.item_id || u.status === "cancelled" || u.serial_key === key || u.serial_key.length !== key.length) return;
+      let n = 0;
+      while (n < key.length && u.serial_key[n] === key[n]) n++;
+      if (n > best) { best = n; found = new Map(); }
+      if (n === best) found.set(u.item_id, u.item_name);
+    });
+    if (best < 4 || found.size !== 1) return null;
+    const [itemId, itemName] = [...found][0];
+    const item = this.items.find((i) => i.id === itemId);
+    return { item_id: itemId, item_name: (item && item.name) || itemName || "", item_sku: (item && item.SKU) || "" };
+  },
+
+  /**
+   * Log damaged or lost stock (the same as Payaz Stock's Report Damage): stock down,
+   * a history entry, and a damage record with its own code (DMG and six digits) for
+   * the damage box label. A booked-in serial is marked damaged too. Products tracked
+   * by serial number need the serial of an in-stock unit, one at a time.
+   * Returns the damage record.
+   */
+  async recordDamage(itemId, quantity, reasonCategory, notes = "", rawSerial = "") {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const who = { id: this.user.uid, name: this.userName };
+    const serial = rawSerial ? this.normaliseSerial(rawSerial) : "";
+    const key = serial ? this.serialKey(serial) : "";
+    quantity = Math.max(1, Math.round(quantity || 1));
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const n = new Uint32Array(1);
+      crypto.getRandomValues(n);
+      const code = "DMG" + String(n[0] % 1000000).padStart(6, "0");
+      const logRef = doc(db, "damage_loss_logs", code), itemRef = doc(db, "items", itemId);
+      let log = null, taken = false;
+      await runTransaction(db, async (tx) => {
+        log = null; taken = false;
+        if ((await tx.get(logRef)).exists()) { taken = true; return; }
+        const itemSnap = await tx.get(itemRef);
+        if (!itemSnap.exists()) throw new Error("That item isn't in the stock app any more.");
+        const item = { id: itemSnap.id, ...itemSnap.data() };
+        const unitSnap = key ? await tx.get(doc(db, "serial_units", key)) : null;
+        const unit = unitSnap && unitSnap.exists() ? unitSnap.data() : null;
+        const locked = item.tracking_type === "serial";
+        if (locked) {
+          if (!serial) throw new Error(`${item.name} is tracked by serial number: scan the serial number of the damaged unit.`);
+          if (!unit) throw new Error(`Serial ${serial} isn't booked in. Book it in first (Book in serials), then log the damage.`);
+          if (unit.item_id !== item.id) throw new Error(`Serial ${serial} is booked in as ${unit.item_name}, not ${item.name}.`);
+          if (unit.status !== "in_stock") throw new Error(`Serial ${serial} isn't in stock (it's recorded as ${unit.status}).`);
+          quantity = 1;
+        }
+        const now = new Date().toISOString();
+        const oldQty = Number(item.quantity_on_hand) || 0, newQty = Math.max(0, oldQty - quantity);
+        const markUnit = unit && unit.status === "in_stock";
+        tx.update(itemRef, { quantity_on_hand: newQty, ...(markUnit && locked ? { last_serial_key: key } : {}), updated_at: now });
+        const reasonText = DAMAGE_REASONS[reasonCategory] ? reasonCategory : "other";
+        const movId = rid("mov");
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU,
+          serial_number: serial || null, direction: "out", quantity_delta: quantity,
+          location_from: item.location, location_to: `Damage box ${code} (${reasonText})`,
+          user_id: who.id, user_name: who.name,
+          reason: `[Damage/Loss ${code}: ${reasonText}] ${notes || "Logged damage/loss discrepancy"} (Old: ${oldQty} \u2192 New: ${newQty})`,
+          source: "manual",
+        });
+        log = {
+          id: code, ref_code: code, item_id: item.id, item_name: item.name, item_sku: item.SKU || "",
+          quantity, reason_category: reasonText, notes, serial_number: serial, box_status: "in_box",
+          timestamp: now, user_id: who.id, user_name: who.name,
+        };
+        tx.set(logRef, log);
+        if (markUnit) {
+          tx.update(doc(db, "serial_units", key), { status: "damaged", damage_ref: code, damaged_at: now, damaged_by_id: who.id, damaged_by_name: who.name, updated_at: now });
+          const id = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+          tx.set(doc(db, "serial_events", id), { id, serial_key: key, serial_number: unit.serial_number, type: "damaged", item_id: unit.item_id, item_name: unit.item_name, ref: code, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now });
+        }
+        const i = this.items.findIndex((x) => x.id === item.id);
+        if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: newQty, updated_at: now };
+      });
+      if (!taken) return log;
+    }
+    throw new Error("Couldn't make a unique damage code. Please try again.");
   },
 
   /**

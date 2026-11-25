@@ -296,6 +296,28 @@ export function formatDate(d = new Date()) {
  * Returns { canvas, bitmap } - canvas is the 1-bit preview, bitmap is
  * { width, height, data } with 1 = black dot, ready for the printer.
  */
+// Damage-box label (Payaz Stock): "DAMAGE BOX", the record's code and its barcode,
+// the item, the serial number (if any), and who logged it and when.
+function layoutDamage(ctx, values, cx, x0, w, y0, h, unit, when) {
+  const code = (values.code || "").trim() || "DMG000000";
+  const items = [], gaps = [];
+  const g = Math.round(unit * 0.03);
+  items.push(["line", fitRuns((s) => [["DAMAGE BOX", s, 0]], Math.round(unit * 0.075), w)]); gaps.push(Math.round(unit * 0.015));
+  const codeLine = fitRuns((s) => [[code, s, 0]], Math.round(unit * 0.14), w);
+  const name = fitRuns((s) => [[(values.item || "").trim() || "-", s, 0]], Math.round(unit * 0.075), w, 9);
+  const serial = (values.serial || "").trim();
+  const serialLine = serial ? fitRuns((s) => [["SN:", Math.round(s * 0.8), Math.round(s * 0.25)], [serial, s, 0]], Math.round(unit * 0.075), w, 9) : null;
+  const byLine = fitRuns((s) => [["By:", Math.round(s * 0.8), Math.round(s * 0.25)], [`${(values.by || "").trim() || "-"} · ${formatDate(when)}`, s, 0]], Math.round(unit * 0.065), w, 9);
+  const fixed = [items[0][1], codeLine, name, serialLine, byLine].filter(Boolean).reduce((a, l) => a + lineHeight(l), 0);
+  const gapTotal = gaps[0] + g * (serialLine ? 4 : 3);
+  items.push(["line", codeLine]); gaps.push(g);
+  items.push(["bar", code, Math.max(0, Math.min(h - fixed - gapTotal, unit * 0.26))]); gaps.push(g);
+  items.push(["line", name]);
+  if (serialLine) { gaps.push(g); items.push(["line", serialLine]); }
+  gaps.push(g); items.push(["line", byLine]);
+  stack(ctx, cx, x0, w, y0, h, items, gaps, 1.4);
+}
+
 // landscape: draw the label sideways (heightMm wide, widthMm tall), e.g. a stock
 // label across a 50 x 80 mm label, then turn it a quarter turn for the printer:
 // "right" (or true) turns it clockwise, "left" anticlockwise.
@@ -311,7 +333,9 @@ export function renderLabel(kind, values, { widthMm = 40, heightMm = 30, rotate 
   const unit = Math.min(H, W * 0.75);
   const date = [[formatDate(when), Math.max(11, Math.round(unit * 0.07)), 0]];
   const hd = lineHeight(date);
-  if (kind === "stock") {
+  if (kind === "damage") {
+    layoutDamage(ctx, values, cx, x0, w, y0, h, unit, when);
+  } else if (kind === "stock") {
     layoutStock(ctx, values, cx, x0, w, y0, h, unit, stockCode);
   } else if (kind === "all") {
     const sections = ["order", "sumup", "tablet"].filter((s) => values[s]);

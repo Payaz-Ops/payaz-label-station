@@ -43,13 +43,20 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .screen { display: none; height: calc(100% - 72px); padding: 18px 20px; }
 .screen.on { display: flex; }
 
-#home.on { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 16px; }
+#home.on { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 16px; }
 .big { color: #fff; font-size: 32px; font-weight: 900; text-align: left; padding: 24px 28px; display: flex; flex-direction: column; justify-content: flex-end; line-height: 1.1; }
 .big small { display: block; font-size: 17px; font-weight: 500; margin-top: 8px; opacity: .92; }
 .big.log    { background: linear-gradient(135deg, var(--purple), var(--navy)); }
 .big.stockx { background: linear-gradient(135deg, var(--blue), var(--teal)); position: relative; }
 .big.stockl { background: linear-gradient(135deg, var(--teal), #1f8fbf); }
 .big.order  { background: linear-gradient(135deg, var(--green), #3fae5e); }
+.big.damage { background: linear-gradient(135deg, var(--coral), #b3263a); }
+.big.spare  { background: #e4e8ee; border-radius: var(--r); }
+.dmgwhy { flex-wrap: wrap; }
+.dmgwhy button { flex: 1 1 30%; min-height: 56px; font-size: 17px; }
+.dmgprev { display: flex; justify-content: center; }
+.dmgprev canvas { max-height: 190px; width: auto !important; box-shadow: 0 1px 6px rgba(0,0,0,.15); background: #fff; }
+.print.dmgsave { background: linear-gradient(90deg, var(--coral), #b3263a); }
 .big .soon { position: absolute; top: 20px; right: 20px; background: rgba(255,255,255,.25); border-radius: 99px; padding: 6px 14px; font-size: 15px; font-weight: 700; }
 
 /* Log */
@@ -255,6 +262,8 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   <button class="big stockx" id="goStock">Stock<small>Stock take, add or remove stock by scanning</small></button>
   <button class="big stockl" id="goStockLabel">Stock Label<small>Shelf labels for your stock items</small></button>
   <button class="big order"  data-go="order">Order Label<small>Order number, card reader and tablet</small></button>
+  <button class="big damage" id="goDamage">Damage<small>Log damaged items and print the damage box label</small></button>
+  <div class="big spare" aria-hidden="true"></div>
 </section>
 
 <section id="edit" class="screen">

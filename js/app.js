@@ -1,7 +1,7 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
 import { loadLog, addLogEntry, deleteLogEntry, logRow, exportCsv } from "./log.js";
-import { stock as realStock, friendlyError as realFriendly } from "./stock.js";
+import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
 const friendlyError = (window.__STOCK_MOCK__ && window.__STOCK_MOCK__.friendlyError) || realFriendly;
@@ -211,7 +211,7 @@ async function checkSerial(k) {
   let info;
   try {
     const u = await S.lookupSerial(serial);
-    if (!u) info = { tone: "warn", text: "Not booked in to Payaz Stock. Tell a manager." };
+    if (!u) info = { tone: "info", text: "Not booked in yet. It will still be recorded on this order (stock count won't change)." };
     else if (u.status === "in_stock") info = { tone: "ok", text: `✓ ${u.item_name}, in stock` };
     else if (u.status === "dispatched") info = vals.order && u.order_number === vals.order
       ? { tone: "ok", text: `✓ Already recorded on this order` }
@@ -239,7 +239,7 @@ async function recordDispatch(values) {
       const r = await S.dispatchSerial(values[k], values.order);
       if (r.kind === "dispatched") out.done.push(`${r.unit.item_name || name} ${values[k]} sent on order ${values.order}`);
       else if (r.kind === "same_order") out.done.push(`${name} ${values[k]} was already on this order`);
-      else if (r.kind === "not_booked_in") out.problems.push(`${name} ${values[k]} was never booked in to Payaz Stock. A manager has been told.`);
+      else if (r.kind === "not_booked_in") out.done.push(`${name} ${values[k]} recorded on order ${values.order}${r.unit && r.unit.item_id ? ` (${r.unit.item_name})` : ""}. It wasn't booked in, so the stock count hasn't changed.`);
       else if (r.kind === "already_sent") out.problems.push(`${r.unit.item_name || name} ${values[k]} was already sent on order ${r.unit.order_number}. A manager has been told.`);
       else out.problems.push(`${r.unit.item_name || name} ${values[k]} is recorded as ${r.unit.status} in Payaz Stock. A manager has been told.`);
     } catch (e) {
@@ -499,7 +499,8 @@ document.querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => saveSet
 $("#reloadBtn").onclick = () => location.reload();
 
 document.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => openMode(b.dataset.go)));
-$("#goStock").onclick = () => { pickForTake = false; openStock("take"); };
+$("#goStock").onclick = () => { pickForTake = false; if (takeMode === "damage") { takeMode = "take"; dmg = dmgFresh(); } openStock("take"); };
+$("#goDamage").onclick = () => { pickForTake = false; takeItem = null; takeMode = "damage"; dmg = dmgFresh(); openStock("take"); };
 $("#goStockLabel").onclick = () => { pickForTake = false; openStock("labels"); };
 $("#goLog").onclick = openLog;
 
@@ -510,7 +511,8 @@ S.watch(() => { stockReady = true; if ($("#stock").classList.contains("on")) ope
 
 async function openStock(view = stockView) {
   stockView = view;
-  $("#hdrTitle").textContent = pickForTake ? "Choose an item to count" : view === "take" ? "Stock" : "Stock Label";
+  $("#hdrTitle").textContent = pickForTake ? (takeMode === "damage" ? "Choose the damaged item" : "Choose an item to count") : view === "take" ? (takeMode === "damage" ? "Log damage" : "Stock") : "Stock Label";
+  $("#takeModes").style.display = takeMode === "damage" ? "none" : "";
   show("stock"); poke();
   const signedIn = S.user && S.isStaff;
   $("#stockSignin").style.display = signedIn ? "none" : "flex";
@@ -901,7 +903,8 @@ function takeResult() {
 function drawTake() {
   document.querySelectorAll("#takeModes button").forEach((b) => b.classList.toggle("on", b.dataset.m === takeMode));
   const M = MODE_TEXT[takeMode], card = $("#takeCard");
-  if (takeMode === "spot") drawSpot(card);
+  if (takeMode === "damage") drawDamage(card);
+  else if (takeMode === "spot") drawSpot(card);
   else if (takeMode === "bookin" && bookItem) drawBookIn(card);
   else if (!takeItem) {
     card.innerHTML = `<div class="scanwait"><div class="beam"></div><h2>Scan an item or its shelf label</h2>
@@ -954,6 +957,7 @@ async function undoEntry(x) {
 }
 function takeStart(item) {
   if (takeMode === "bookin") { bookStart(item); return; }
+  if (takeMode === "damage") { dmgStart(item); return; }
   if (item && item.tracking_type === "serial") {
     // Serial-tracked: the count is locked, units are booked in one by one
     overlay(`${item.name} is tracked by serial number`, "Its stock count can't be changed here. Book new units in by their serial numbers; they come off stock when sent on an Order Label.", false, false,
@@ -1049,9 +1053,101 @@ function bookScan(code) {
   });
 }
 
+/* ---------- log damage (same records as Payaz Stock's Report Damage) ---------- */
+// Scan the damaged item (or its serial number), choose why, and log it: stock goes
+// down and a damage record is made with its own code. Then print its label, stick
+// it on, and put the item in the damage box.
+const dmgFresh = () => ({ item: null, unit: null, qty: 1, reason: "damaged_production", note: "", msg: null, saved: null, busy: false });
+let dmg = dmgFresh();
+function dmgStart(item, unit = null) {
+  dmg = { ...dmgFresh(), reason: dmg.reason, item, unit, msg: item.tracking_type === "serial" && !unit
+    ? { tone: "", text: `${esc(item.name)} is tracked by serial number: now scan the serial number of the damaged unit.` } : null };
+  if (unit && unit.status !== "in_stock") dmg.msg = { tone: "bad", text: `Serial <b>${esc(unit.serial_number)}</b> isn't in stock (${esc(serialStatusText(unit))}). Tell a manager.` };
+  drawTake(); poke();
+}
+async function dmgScan(code) {
+  code = (code || "").trim();
+  if (!code || dmg.busy) return;
+  const needSerial = dmg.item && !dmg.saved && dmg.item.tracking_type === "serial";
+  const found = await S.findItemOrSerial(code);
+  if (found && found.unit) { dmgStart(found.item, found.unit); return; }
+  if (found && found.item) {
+    if (needSerial && found.item.id === dmg.item.id) { dmg.msg = { tone: "bad", text: `<b>${esc(code)}</b> is the product barcode. Scan the serial number (marked S/N or Serial).` }; drawTake(); return; }
+    dmgStart(found.item); return;
+  }
+  if (needSerial) { dmg.msg = { tone: "bad", text: `Serial <b>${esc(S.normaliseSerial(code))}</b> isn't booked in. Book it in first (Stock, then Book in serials), then log the damage.` }; drawTake(); return; }
+  overlay("Not in the stock app", `Nothing has the code ${code}. Scan the item's barcode or shelf label, or tap Find an item.`, true);
+}
+const dmgLabelValues = (log) => ({ code: log.ref_code, item: log.item_name, serial: log.serial_number || "", by: log.user_name });
+function drawDamage(card) {
+  if (dmg.saved) {
+    const log = dmg.saved;
+    card.innerHTML = `<h2>Damage logged \u2713</h2>
+      <div class="bookmsg good">Logged as <b>${esc(log.ref_code)}</b>: ${log.quantity} \u00d7 ${esc(log.item_name)}${log.serial_number ? ` (serial ${esc(log.serial_number)})` : ""}, taken off stock.</div>
+      <div class="dmgprev" id="dmgPrev"></div>
+      <div class="meta">1. Print the label. 2. Stick it on the item (or its bag). 3. Put it in the damage box.</div>
+      <div class="takebtns"><button class="ghost" id="dmgAgain" style="min-height:70px">Print again</button><button class="print" id="dmgDone">DONE</button></div>`;
+    const lbl = makeLabel("damage", dmgLabelValues(log));
+    $("#dmgPrev").replaceChildren(lbl.canvas, ...thinWarning(lbl.thinBars));
+    $("#dmgAgain").onclick = () => dmgPrint();
+    $("#dmgDone").onclick = () => { dmg = { ...dmgFresh(), reason: dmg.reason }; drawTake(); };
+    return;
+  }
+  if (!dmg.item) {
+    card.innerHTML = `<div class="scanwait"><div class="beam"></div><h2>Scan the damaged item</h2>
+      <p style="margin:0;color:var(--muted);font-size:17px">Scan its barcode or shelf label. For tablets and card readers, scan the serial number. Or tap Find an item.</p>
+      <div class="btns" style="display:flex;gap:10px"><button class="ghost cam" id="dmgCam">&#128247; Use camera</button></div></div>`;
+    $("#dmgCam").onclick = () => scanWithCamera((c) => dmgScan(c.trim()));
+    return;
+  }
+  const item = S.items.find((i) => i.id === dmg.item.id) || dmg.item;
+  const serialItem = item.tracking_type === "serial", hasSerial = !!(dmg.unit && dmg.unit.status === "in_stock");
+  const ready = serialItem ? hasSerial : !dmg.unit || hasSerial;
+  card.innerHTML = `<h2>${esc(item.name || "(no name)")}</h2>
+    <div class="meta">SKU ${esc(item.SKU || "-")} \u00b7 In stock now: <b>${recorded(item)}</b>${dmg.unit ? ` \u00b7 Serial <b>${esc(dmg.unit.serial_number)}</b>` : ""}</div>
+    ${dmg.unit || serialItem ? "" : `<div class="counter"><button id="dmgMinus">&minus;</button><button class="num" id="dmgNum"><small>DAMAGED</small><b>${dmg.qty}</b></button><button id="dmgPlus">+</button></div>`}
+    ${serialItem && !hasSerial ? `<div class="takebtns"><button class="ghost cam" id="dmgCam" style="min-height:64px">&#128247; Camera</button><button class="ghost" id="dmgType" style="min-height:64px">&#9000; Type the serial</button></div>` : ""}
+    <div class="seg dmgwhy" id="dmgWhy">${Object.entries(DAMAGE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${dmg.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>
+    <button class="field" id="dmgNote" style="padding:8px 14px"><div class="lbl">What happened? (optional)</div><div class="val${dmg.note ? "" : " empty"}" style="font-size:20px">${dmg.note ? esc(dmg.note) : "Tap to type a note, e.g. cracked screen"}</div></button>
+    ${dmg.msg ? `<div class="bookmsg ${dmg.msg.tone}">${dmg.msg.text}</div>` : ""}
+    <div class="takebtns"><button class="ghost" id="dmgCancel" style="min-height:70px">Cancel</button><button class="print dmgsave" id="dmgSave" ${ready && !dmg.busy ? "" : "disabled"}>LOG DAMAGE</button></div>`;
+  if ($("#dmgMinus")) {
+    $("#dmgMinus").onclick = () => { dmg.qty = Math.max(1, dmg.qty - 1); drawTake(); poke(); };
+    $("#dmgPlus").onclick = () => { dmg.qty = Math.min(9999, dmg.qty + 1); drawTake(); poke(); };
+  }
+  if ($("#dmgCam")) $("#dmgCam").onclick = () => scanWithCamera((c) => dmgScan(c.trim()));
+  if ($("#dmgType")) $("#dmgType").onclick = () => { searchTarget = "dmgserial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
+  card.querySelectorAll("#dmgWhy button").forEach((b) => (b.onclick = () => { dmg.reason = b.dataset.v; drawTake(); poke(); }));
+  $("#dmgNote").onclick = () => { searchTarget = "dmgnote"; drawTyper(); $("#typer").classList.add("on"); };
+  $("#dmgCancel").onclick = () => { dmg = { ...dmgFresh(), reason: dmg.reason }; drawTake(); };
+  $("#dmgSave").onclick = dmgSave;
+}
+async function dmgSave() {
+  if (dmg.busy || !dmg.item) return;
+  dmg.busy = true;
+  overlay("Logging the damage…", dmg.item.name, false, true);
+  try {
+    const qty = dmg.unit ? 1 : dmg.qty;
+    const log = await S.recordDamage(dmg.item.id, qty, dmg.reason, dmg.note.trim(), dmg.unit ? dmg.unit.serial_number : "");
+    dmg = { ...dmgFresh(), reason: dmg.reason, saved: log };
+    takeSession.unshift({ name: log.item_name, what: `Damage ${log.ref_code}: ${log.quantity} off stock (${DAMAGE_REASONS[log.reason_category] || log.reason_category})`, time: hhmm(), bad: false, undo: null });
+    hideOverlay(); drawTake();
+    dmgPrint();
+  } catch (e) {
+    dmg.busy = false;
+    overlay("Couldn't log the damage", friendlyError(e), true);
+    drawTake();
+  }
+}
+async function dmgPrint() {
+  if (!dmg.saved) return;
+  if (await doPrint("damage", dmgLabelValues(dmg.saved), 1)) setTimeout(hideOverlay, 1100);
+}
+
 async function takeScan(code) {
   if (takeMode === "bookin") { bookScan(code); return; }
   if (takeMode === "spot") { spotScan(code); return; }
+  if (takeMode === "damage") { dmgScan(code); return; }
   if (!code || takeBusy) return;
   const found = await S.findItemOrSerial(code);
   const item = found && found.item;
@@ -1266,9 +1362,10 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
-  if (searchTarget === "serial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
+  if (searchTarget === "serial" || searchTarget === "dmgserial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
+  if (searchTarget === "dmgnote") { dmg.note = v.slice(0, 200); drawTake(); return; }
   if (searchTarget === "location") { locTyped = v.slice(0, 60); return; }
   if (searchTarget === "spot") { spot.count = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
   if (searchTarget === "bookref") { bookRef = v.toUpperCase().slice(0, 60); drawTake(); return; }
@@ -1286,6 +1383,7 @@ $("#typerKbd").onclick = (e) => {
   if (k === "DONE") {
     $("#typer").classList.remove("on");
     if (searchTarget === "serial" && serialTyped.trim()) bookScan(serialTyped);
+    if (searchTarget === "dmgserial" && serialTyped.trim()) dmgScan(serialTyped.trim());
     if (searchTarget === "location" && locTyped.trim() && locDone) locDone(locTyped.trim());
     return;
   }
