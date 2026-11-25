@@ -501,6 +501,111 @@ export const stock = {
     return result;
   },
 
+  /* ---------- Production Floor (same tiles and records as Payaz Stock's Production Floor) ---------- */
+
+  /** The Production Floor tiles set up in Payaz Stock, in the same order. */
+  async productionTiles() {
+    init();
+    const snap = await getDocs(collection(db, "production_tiles"));
+    const tiles = [];
+    snap.forEach((d) => tiles.push({ id: d.id, ...d.data() }));
+    tiles.sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+    return tiles;
+  },
+
+  /**
+   * Build a tile (e.g. a Giving Station) as Payaz Stock's Build does: every part in
+   * its recipe comes off stock with a history entry, plus a production history entry,
+   * all in one save. Nothing is taken if any part is short. Products tracked by
+   * serial number can't be in a recipe (they go out on an Order Label).
+   * Returns the production log.
+   */
+  async buildTile(tile, quantityBuilt) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    quantityBuilt = Math.max(1, Math.round(quantityBuilt || 1));
+    const recipe = (tile.recipe || []).filter((r) => r && r.item_id && Number(r.quantity_per_unit) > 0);
+    if (!recipe.length) throw new Error(`${tile.name} has no parts set up yet. Add them in Payaz Stock > Production Floor.`);
+    const who = { id: this.user.uid, name: this.userName };
+    const now = new Date().toISOString();
+    const logId = "plog_" + Math.random().toString(36).substring(2, 11);
+    let log = null;
+    await runTransaction(db, async (tx) => {
+      const snaps = await Promise.all(recipe.map((r) => tx.get(doc(db, "items", r.item_id))));
+      const items = new Map();
+      snaps.forEach((sn) => sn.exists() && items.set(sn.id, { id: sn.id, ...sn.data() }));
+      for (const r of recipe) {
+        const it = items.get(r.item_id), needed = r.quantity_per_unit * quantityBuilt;
+        if (!it) throw new Error(`One of the parts of ${tile.name} isn't in the stock app any more. Check the tile in Payaz Stock > Production Floor.`);
+        if (it.tracking_type === "serial") throw new Error(`${it.name} is tracked by serial number, so it can't be used up in a build. Send it out on an Order Label instead.`);
+        if ((Number(it.quantity_on_hand) || 0) < needed) throw new Error(`Not enough ${it.name}: needs ${needed}, only ${Number(it.quantity_on_hand) || 0} in stock. Nothing was taken off stock.`);
+      }
+      const deductions = [];
+      for (const r of recipe) {
+        const it = items.get(r.item_id), needed = r.quantity_per_unit * quantityBuilt;
+        const oldQty = Number(it.quantity_on_hand) || 0, newQty = oldQty - needed;
+        deductions.push({ item_id: it.id, item_name: it.name, quantity_deducted: needed });
+        tx.update(doc(db, "items", it.id), { quantity_on_hand: newQty, updated_at: now });
+        const movId = rid("mov");
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: it.id, item_name: it.name, item_sku: it.SKU,
+          serial_number: null, direction: "out", quantity_delta: needed,
+          location_from: it.location, location_to: "Production Build (" + tile.name + ")",
+          user_id: who.id, user_name: who.name,
+          reason: `[Production Build] Built ${quantityBuilt}x ${tile.name}`, source: "manual",
+        });
+      }
+      log = { id: logId, tile_id: tile.id, tile_name: tile.name, timestamp: now, quantity_built: quantityBuilt, deductions, user_id: who.id, user_name: who.name, action_type: "build", is_undone: false, app: "Label Station" };
+      tx.set(doc(db, "production_logs", logId), log);
+    });
+    for (const d of log.deductions) {
+      const i = this.items.findIndex((x) => x.id === d.item_id);
+      if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: (Number(this.items[i].quantity_on_hand) || 0) - d.quantity_deducted, updated_at: now };
+    }
+    return log;
+  },
+
+  /** Undo a build made by mistake (as Payaz Stock's Undo): the parts go back into stock. */
+  async undoBuild(logId) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const who = { id: this.user.uid, name: this.userName };
+    const logRef = doc(db, "production_logs", logId);
+    let restored = [];
+    await runTransaction(db, async (tx) => {
+      restored = [];
+      const ls = await tx.get(logRef);
+      if (!ls.exists()) throw new Error("That build isn't in Payaz Stock.");
+      const lg = ls.data();
+      if (lg.is_undone) throw new Error("That build has already been undone.");
+      if (lg.action_type === "stock_in") throw new Error("Undo this one in Payaz Stock > Production Floor.");
+      const now = new Date().toISOString();
+      const snaps = await Promise.all(lg.deductions.map((d) => tx.get(doc(db, "items", d.item_id))));
+      lg.deductions.forEach((d, n) => {
+        const sn = snaps[n];
+        if (!sn.exists()) return;
+        const it = { id: sn.id, ...sn.data() };
+        if (it.tracking_type === "serial") throw new Error(`${it.name} is now tracked by serial number: ask a manager to undo this build.`);
+        const newQty = (Number(it.quantity_on_hand) || 0) + d.quantity_deducted;
+        tx.update(doc(db, "items", it.id), { quantity_on_hand: newQty, updated_at: now });
+        const movId = rid("mov");
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: it.id, item_name: it.name, item_sku: it.SKU,
+          serial_number: null, direction: "in", quantity_delta: d.quantity_deducted,
+          location_from: "Production Build (" + lg.tile_name + ") [UNDO]", location_to: it.location,
+          user_id: who.id, user_name: who.name,
+          reason: `[Production Undo] Undid build of ${lg.quantity_built}x ${lg.tile_name}`, source: "manual",
+        });
+        restored.push({ id: it.id, qty: newQty, now });
+      });
+      tx.update(logRef, { is_undone: true });
+    });
+    for (const r of restored) {
+      const i = this.items.findIndex((x) => x.id === r.id);
+      if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: r.qty, updated_at: r.now };
+    }
+  },
+
   /** The product a serial number most likely belongs to: the one whose booked-in
    *  serials share the longest start with it (same length, at least 4 characters
    *  in common, and only one product that close). null if it can't tell. */

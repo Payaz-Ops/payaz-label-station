@@ -618,6 +618,7 @@ $("#goStock").onclick = () => { pickForTake = false; if (takeMode === "damage") 
 $("#goDamage").onclick = () => { pickForTake = false; takeItem = null; takeMode = "damage"; dmg = dmgFresh(); openStock("take"); };
 $("#goStockLabel").onclick = () => { pickForTake = false; openStock("labels"); };
 $("#goLog").onclick = openLog;
+$("#goProd").onclick = () => openProd();
 
 /* ---------- stock (linked to the Payaz Stock app) ---------- */
 let stockSearch = "", stockReady = false, sheetItem = null, sheetCopies = 1;
@@ -1531,7 +1532,7 @@ function poke() {
   idleTimer = setTimeout(async () => {
     if (!S.person) return;
     if (takeItem && !(await takeSave(true))) return; // keep an unsaved count on screen if saving failed
-    hideOverlay(); closeCamera(); closeSheet(); pickForTake = false; home();
+    hideOverlay(); closeCamera(); closeSheet(); $("#buildSheet").classList.remove("on"); pickForTake = false; home();
   }, Math.min(180000, settings.lockMins * 60000 - 1000));
   if (S.person) lockTimer = setTimeout(() => lockNow(true), settings.lockMins * 60000);
 }
@@ -1553,6 +1554,95 @@ if (!NATIVE && "serviceWorker" in navigator && location.protocol === "https:") n
 const face = new FontFace(LABEL_FONT, "url(fonts/AtkinsonHyperlegible-Bold.ttf)");
 face.load().then((f) => document.fonts.add(f)).catch(() => {}).finally(() => { if (active) render(); });
 
+/* ---------- Production (Payaz Stock's Production Floor tiles) ---------- */
+// The same tiles as the website. Tap one (e.g. Giving Station), choose how many and
+// Build: all its parts come off stock under your name. Tablets and card readers aren't
+// in tiles: they go out on the Order Label (Next: Order Label).
+let prodTiles = [], bsTile = null, bsQty = 1, bsBusy = false;
+const prodSession = [];
+const canBuild = (t) => {
+  const r = (t.recipe || []).filter((x) => x && x.item_id && Number(x.quantity_per_unit) > 0);
+  if (!r.length || r.some((x) => { const it = S.items.find((i) => i.id === x.item_id); return !it || it.tracking_type === "serial"; })) return 0;
+  return Math.max(0, Math.min(...r.map((x) => { const it = S.items.find((i) => i.id === x.item_id); return Math.floor((Number(it && it.quantity_on_hand) || 0) / x.quantity_per_unit); })));
+};
+async function openProd() {
+  $("#hdrTitle").textContent = "Production"; show("prod"); poke();
+  overlay("Loading…", "", false, true);
+  try {
+    const [tiles] = await Promise.all([S.productionTiles(), S.items.length ? null : S.refresh()]);
+    prodTiles = tiles; hideOverlay();
+  } catch (e) { overlay("Couldn't load Production Floor", friendlyError(e), true); }
+  drawProd();
+}
+function drawProd() {
+  $("#prodGrid").innerHTML = prodTiles.map((t) => {
+    const n = canBuild(t), hasParts = (t.recipe || []).length > 0;
+    const serialPart = (t.recipe || []).some((x) => { const it = S.items.find((i) => i.id === x.item_id); return it && it.tracking_type === "serial"; });
+    return `<button class="ptile" data-id="${esc(t.id)}"><div class="pic" ${t.image_url ? `style="background-image:url('${esc(t.image_url)}')"` : ""}>${t.image_url ? "" : "&#128230;"}</div>` +
+      `<div class="nm">${esc(t.name || "(no name)")}</div><div class="cb ${n ? "" : "none"}">${!hasParts ? "No parts set up" : serialPart ? "Has a tablet or card reader in it: ask a manager" : n ? `Can build ${n}` : "Not enough parts"}</div></button>`;
+  }).join("");
+  $("#prodEmpty").textContent = prodTiles.length ? "" : "No Production Floor tiles yet. Set them up on the website: Payaz Stock > Production Floor.";
+  $("#prodGrid").querySelectorAll("[data-id]").forEach((b) => (b.onclick = () => openBuild(prodTiles.find((t) => t.id === b.dataset.id))));
+  $("#prodSession").innerHTML = `<h4>BUILT THIS SESSION</h4>` + (prodSession.length ? prodSession.map((x, i) =>
+    `<div class="it${x.undone ? " undone" : ""}"><div class="itrow"><span>${x.qty} \u00d7 ${esc(x.name)}<small>${esc(x.what)} \u00b7 ${x.time}</small></span>` +
+    (x.undone ? "" : `<button class="undo" data-undo="${i}">Undo</button>`) + `</div></div>`).join("") : `<div class="it"><small>Nothing built yet.</small></div>`);
+  $("#prodSession").querySelectorAll("[data-undo]").forEach((b) => (b.onclick = () => undoBuildEntry(prodSession[+b.dataset.undo])));
+}
+function openBuild(t) {
+  if (!t) return;
+  bsTile = t; bsQty = 1; drawBuild(); $("#buildSheet").classList.add("on"); poke();
+}
+function drawBuild() {
+  const t = bsTile, recipe = (t.recipe || []).filter((x) => x && x.item_id && Number(x.quantity_per_unit) > 0);
+  let short = false, serial = false;
+  $("#bsName").textContent = t.name || "(no name)";
+  $("#bsMeta").textContent = recipe.length ? `${recipe.length} part${recipe.length === 1 ? "" : "s"} \u00b7 can build ${canBuild(t)} with the stock there is now` : "";
+  $("#bsParts").innerHTML = recipe.map((x) => {
+    const it = S.items.find((i) => i.id === x.item_id), have = Number(it && it.quantity_on_hand) || 0, need = x.quantity_per_unit * bsQty;
+    const bad = !it || have < need || (it && it.tracking_type === "serial");
+    if (bad) short = true; if (it && it.tracking_type === "serial") serial = true;
+    return `<tr class="${bad ? "short" : ""}"><td>${esc(it ? it.name : "Part no longer in the stock app")}</td><td class="n">${x.quantity_per_unit}</td><td class="n">${need}</td><td class="n">${it ? have : "-"}</td></tr>`;
+  }).join("");
+  $("#bsQty").textContent = bsQty;
+  $("#bsMsg").className = "bookmsg" + (short || !recipe.length ? " bad" : "");
+  $("#bsMsg").textContent = !recipe.length ? "No parts set up for this tile yet. Add them on the website: Payaz Stock > Production Floor."
+    : serial ? "A part tracked by serial number is in this tile. Those go out on the Order Label: ask a manager to take it out of the tile."
+    : short ? `Not enough of the parts in red to build ${bsQty}.` : `Tapping Build takes these parts off stock under ${S.userName}.`;
+  $("#bsBuild").disabled = short || !recipe.length || bsBusy;
+}
+$("#bsMinus").onclick = () => { bsQty = Math.max(1, bsQty - 1); drawBuild(); poke(); };
+$("#bsPlus").onclick = () => { bsQty = Math.min(99, bsQty + 1); drawBuild(); poke(); };
+$("#bsCancel").onclick = () => $("#buildSheet").classList.remove("on");
+$("#buildSheet").onclick = (e) => { if (e.target.id === "buildSheet") $("#buildSheet").classList.remove("on"); };
+$("#bsBuild").onclick = async () => {
+  if (bsBusy || !bsTile) return;
+  bsBusy = true; drawBuild();
+  overlay(`Building ${bsQty} \u00d7 ${bsTile.name}…`, "", false, true);
+  try {
+    const log = await S.buildTile(bsTile, bsQty);
+    $("#buildSheet").classList.remove("on");
+    prodSession.unshift({ id: log.id, name: log.tile_name, qty: log.quantity_built, what: `${log.deductions.length} parts off stock`, time: hhmm() });
+    drawProd();
+    overlay(`Built ${log.quantity_built} \u00d7 ${log.tile_name} \u2713`, `${log.deductions.map((d) => `${d.item_name} \u2212${d.quantity_deducted}`).join("\n")}\n\nNow do the tablet and card reader on the Order Label.`, false, false,
+      { label: "Next: Order Label", run: () => openMode("order") });
+  } catch (e) {
+    overlay("Couldn't build", friendlyError(e), true);
+    try { await S.refresh(); } catch (e2) {}
+    drawProd(); if ($("#buildSheet").classList.contains("on")) drawBuild();
+  } finally { bsBusy = false; }
+};
+async function undoBuildEntry(x) {
+  if (!x || x.undone) return;
+  overlay(`Undo ${x.qty} \u00d7 ${x.name}?`, "Its parts go back into stock.", false, false, { label: "Undo", run: async () => {
+    overlay("Undoing…", "", false, true);
+    try { await S.undoBuild(x.id); x.undone = true; x.what = "Undone: parts back in stock"; overlay("Undone \u2713", "", false, true); setTimeout(hideOverlay, 900); }
+    catch (e) { overlay("Couldn't undo", friendlyError(e), true); }
+    drawProd();
+  } });
+}
+$("#prodRefresh").onclick = () => openProd();
+$("#prodOrder").onclick = () => openMode("order");
+
 /* ---------- who's using the tablet (PIN sign-in) ---------- */
 // Each person adds themselves once (email + password, then a 4-digit PIN). After
 // that they tap their name and enter their PIN, and everything they do is saved
@@ -1560,7 +1650,7 @@ face.load().then((f) => document.fonts.add(f)).catch(() => {}).finally(() => { i
 let pin = { mode: "unlock", id: null, name: "", digits: "", first: "", msg: "", bad: false, forgot: false };
 const initials = (n) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
 function showWho() {
-  $("#pinPad").classList.remove("on"); $("#typer").classList.remove("on"); $("#locPick").classList.remove("on");
+  $("#pinPad").classList.remove("on"); $("#typer").classList.remove("on"); $("#locPick").classList.remove("on"); $("#buildSheet").classList.remove("on");
   closeSheet(); closeCamera();
   $("#hdrTitle").textContent = "Label Station";
   show("who"); drawWho();

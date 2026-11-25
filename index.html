@@ -81,7 +81,28 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .big.stockl { background: linear-gradient(135deg, var(--teal), #1f8fbf); }
 .big.order  { background: linear-gradient(135deg, var(--green), #3fae5e); }
 .big.damage { background: linear-gradient(135deg, var(--coral), #b3263a); }
-.big.spare  { background: #e4e8ee; border-radius: var(--r); }
+.big.prod   { background: linear-gradient(135deg, #f59e0b, #c2410c); }
+#prod.on { display: flex; gap: 14px; min-height: 0; }
+.prodgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; overflow-y: auto; align-content: start; flex: 1; min-height: 0; }
+.ptile { background: var(--card); border-radius: var(--r); padding: 0; overflow: hidden; display: flex; flex-direction: column; text-align: left; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.ptile .pic { height: 120px; background: #eef2f6 center / cover no-repeat; display: flex; align-items: center; justify-content: center; font-size: 44px; }
+.ptile .nm { padding: 10px 14px 2px; font-size: 21px; font-weight: 900; color: var(--navy); }
+.ptile .cb { padding: 0 14px 12px; font-size: 15px; font-weight: 700; color: #3c7a12; }
+.ptile .cb.none { color: #b3263a; }
+#buildSheet { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: center; justify-content: center; z-index: 7; }
+#buildSheet.on { display: flex; }
+#buildSheet .box { background: #fff; border-radius: 20px; padding: 22px 26px; width: 92%; max-width: 900px; max-height: 92vh; display: flex; flex-direction: column; gap: 12px; }
+#buildSheet h2 { margin: 0; font-size: 28px; color: var(--navy); }
+.parts { overflow-y: auto; max-height: 300px; border: 1px solid var(--line); border-radius: 12px; }
+.parts table { width: 100%; border-collapse: collapse; font-size: 17px; }
+.parts td, .parts th { padding: 8px 12px; border-top: 1px solid var(--line); text-align: left; }
+.parts th { border-top: none; font-size: 13px; color: var(--muted); }
+.parts .n { text-align: right; font-weight: 800; white-space: nowrap; }
+.parts tr.short td { color: #b3263a; }
+.buildrow { display: flex; gap: 14px; align-items: center; }
+.buildrow .counter { margin: 0; }
+.buildrow .print { flex: 1; min-height: 84px; font-size: 28px; }
+.buildrow .ghost { min-height: 84px; }
 .dmgwhy { flex-wrap: wrap; }
 .dmgwhy button { flex: 1 1 30%; min-height: 56px; font-size: 17px; }
 .dmgprev { display: flex; justify-content: center; }
@@ -312,7 +333,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   <button class="big stockl" id="goStockLabel">Stock Label<small>Shelf labels for your stock items</small></button>
   <button class="big order"  data-go="order">Order Label<small>Order number, card reader and tablet</small></button>
   <button class="big damage" id="goDamage">Damage<small>Log damaged items and print the damage box label</small></button>
-  <div class="big spare" aria-hidden="true"></div>
+  <button class="big prod" id="goProd">Production<small>Build kits like a Giving Station: takes their parts off stock</small></button>
 </section>
 
 <section id="edit" class="screen">
@@ -422,6 +443,18 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   </div>
 </section>
 
+<section id="prod" class="screen">
+  <div class="takeleft">
+    <div class="prodgrid" id="prodGrid"></div>
+    <div class="empty-log" id="prodEmpty"></div>
+  </div>
+  <div class="takeright">
+    <div class="session" id="prodSession"></div>
+    <button class="chip" id="prodRefresh">&#8635; Refresh</button>
+    <button class="chip primary" id="prodOrder">Next: Order Label &#8594;</button>
+  </div>
+</section>
+
 <section id="settings" class="screen">
   <div class="card">
     <h3>Printer</h3>
@@ -488,6 +521,17 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   <div class="meta" id="locFor"></div>
   <div class="chips" id="locChips"></div>
   <div class="btns"><button class="ghost" id="locType">&#9000; Type a new location</button><button class="ghost" id="locClose">Cancel</button></div>
+</div></div>
+<div id="buildSheet"><div class="box">
+  <h2 id="bsName"></h2>
+  <div class="meta" id="bsMeta"></div>
+  <div class="parts"><table><thead><tr><th>Part</th><th class="n">Each</th><th class="n">Taking</th><th class="n">In stock</th></tr></thead><tbody id="bsParts"></tbody></table></div>
+  <div class="bookmsg" id="bsMsg"></div>
+  <div class="buildrow">
+    <button class="ghost" id="bsCancel">Cancel</button>
+    <div class="counter"><button id="bsMinus">&minus;</button><button class="num" id="bsNum"><small>BUILDING</small><b id="bsQty">1</b></button><button id="bsPlus">+</button></div>
+    <button class="print" id="bsBuild">BUILD</button>
+  </div>
 </div></div>
 <div id="pinPad"><div class="box">
   <div class="pinname" id="ppName"></div>
