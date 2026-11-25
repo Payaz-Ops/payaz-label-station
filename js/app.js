@@ -150,6 +150,11 @@ function press(key) {
   poke();
   const f = fieldOf(active);
   let v = vals[active];
+  if (key === "NEXT") { // Next: move down to the next empty box (the card reader after the order number)
+    const ks = fields().map((x) => x.k), after = ks.slice(ks.indexOf(active) + 1);
+    setActive(after.find((k) => !vals[k]) || after[0] || active);
+    return;
+  }
   if (key === "DEL") v = v.slice(0, -1);
   else if (key === "CASE") { caseMode = nextCase(); render(); return; }
   // PZ / RR go on the end of an order number; tapping the other one swaps it

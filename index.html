@@ -180,7 +180,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; flex: 1; }
 .keypad button, .kbd button { background: #eef2f6; font-size: 30px; font-weight: 700; }
 .keypad button.pz { background: var(--navy); color: #fff; }
-.keypad button.wide { grid-column: 1 / -1; }
+.keypad button.next { grid-column: span 2; background: var(--teal); color: #fff; }
 .keypad button.del, .kbd button.del { background: #fde7e9; color: #b3263a; }
 
 .scan { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 12px; }
@@ -269,7 +269,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
         <button>4</button><button>5</button><button>6</button>
         <button>7</button><button>8</button><button>9</button>
         <button class="pz" data-k="PZ">PZ</button><button>0</button><button class="pz" data-k="RR">RR</button>
-        <button class="del wide" data-k="DEL">&#9003;</button>
+        <button class="del" data-k="DEL">&#9003;</button><button class="next" data-k="NEXT">Next &#8595;</button>
       </div>
       <div class="scan" id="scan">
         <div class="beam"></div>
