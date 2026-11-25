@@ -1057,7 +1057,7 @@ function bookScan(code) {
 // Scan the damaged item (or its serial number), choose why, and log it: stock goes
 // down and a damage record is made with its own code. Then print its label, stick
 // it on, and put the item in the damage box.
-const dmgFresh = () => ({ item: null, unit: null, qty: 1, reason: "damaged_production", note: "", msg: null, saved: null, busy: false });
+const dmgFresh = () => ({ item: null, unit: null, serialText: "", qty: 1, reason: "damaged_production", note: "", msg: null, saved: null, busy: false });
 let dmg = dmgFresh();
 function dmgStart(item, unit = null) {
   dmg = { ...dmgFresh(), reason: dmg.reason, item, unit, msg: item.tracking_type === "serial" && !unit
@@ -1076,6 +1076,8 @@ async function dmgScan(code) {
     dmgStart(found.item); return;
   }
   if (needSerial) { dmg.msg = { tone: "bad", text: `Serial <b>${esc(S.normaliseSerial(code))}</b> isn't booked in. Book it in first (Stock, then Book in serials), then log the damage.` }; drawTake(); return; }
+  // An item without serial tracking: an unknown code is the damaged unit's serial number (optional, as in Payaz Stock)
+  if (dmg.item && !dmg.saved && !dmg.unit) { dmg.serialText = S.normaliseSerial(code).slice(0, 40); dmg.msg = null; drawTake(); poke(); return; }
   overlay("Not in the stock app", `Nothing has the code ${code}. Scan the item's barcode or shelf label, or tap Find an item.`, true);
 }
 const dmgLabelValues = (log) => ({ code: log.ref_code, item: log.item_name, serial: log.serial_number || "", by: log.user_name });
@@ -1105,7 +1107,8 @@ function drawDamage(card) {
   const ready = serialItem ? hasSerial : !dmg.unit || hasSerial;
   card.innerHTML = `<h2>${esc(item.name || "(no name)")}</h2>
     <div class="meta">SKU ${esc(item.SKU || "-")} \u00b7 In stock now: <b>${recorded(item)}</b>${dmg.unit ? ` \u00b7 Serial <b>${esc(dmg.unit.serial_number)}</b>` : ""}</div>
-    ${dmg.unit || serialItem ? "" : `<div class="counter"><button id="dmgMinus">&minus;</button><button class="num" id="dmgNum"><small>DAMAGED</small><b>${dmg.qty}</b></button><button id="dmgPlus">+</button></div>`}
+    ${!serialItem && !dmg.unit ? `<button class="field" id="dmgSerial" style="padding:8px 14px"><div class="lbl">Serial number (if the unit has one)</div><div class="val${dmg.serialText ? "" : " empty"}" style="font-size:20px">${dmg.serialText ? esc(dmg.serialText) + ` <small style="font-weight:500;color:var(--muted)">\u00b7 one unit per serial, so quantity is 1</small>` : "Scan it, or tap to type it"}</div></button>` : ""}
+    ${dmg.unit || serialItem || dmg.serialText ? "" : `<div class="counter"><button id="dmgMinus">&minus;</button><button class="num" id="dmgNum"><small>DAMAGED</small><b>${dmg.qty}</b></button><button id="dmgPlus">+</button></div>`}
     ${serialItem && !hasSerial ? `<div class="takebtns"><button class="ghost cam" id="dmgCam" style="min-height:64px">&#128247; Camera</button><button class="ghost" id="dmgType" style="min-height:64px">&#9000; Type the serial</button></div>` : ""}
     <div class="seg dmgwhy" id="dmgWhy">${Object.entries(DAMAGE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${dmg.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>
     <button class="field" id="dmgNote" style="padding:8px 14px"><div class="lbl">What happened? (optional)</div><div class="val${dmg.note ? "" : " empty"}" style="font-size:20px">${dmg.note ? esc(dmg.note) : "Tap to type a note, e.g. cracked screen"}</div></button>
@@ -1116,6 +1119,7 @@ function drawDamage(card) {
     $("#dmgPlus").onclick = () => { dmg.qty = Math.min(9999, dmg.qty + 1); drawTake(); poke(); };
   }
   if ($("#dmgCam")) $("#dmgCam").onclick = () => scanWithCamera((c) => dmgScan(c.trim()));
+  if ($("#dmgSerial")) $("#dmgSerial").onclick = () => { searchTarget = "dmgserial"; serialTyped = dmg.serialText; drawTyper(); $("#typer").classList.add("on"); };
   if ($("#dmgType")) $("#dmgType").onclick = () => { searchTarget = "dmgserial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
   card.querySelectorAll("#dmgWhy button").forEach((b) => (b.onclick = () => { dmg.reason = b.dataset.v; drawTake(); poke(); }));
   $("#dmgNote").onclick = () => { searchTarget = "dmgnote"; drawTyper(); $("#typer").classList.add("on"); };
@@ -1127,8 +1131,8 @@ async function dmgSave() {
   dmg.busy = true;
   overlay("Logging the damage…", dmg.item.name, false, true);
   try {
-    const qty = dmg.unit ? 1 : dmg.qty;
-    const log = await S.recordDamage(dmg.item.id, qty, dmg.reason, dmg.note.trim(), dmg.unit ? dmg.unit.serial_number : "");
+    const serial = dmg.unit ? dmg.unit.serial_number : dmg.serialText.trim();
+    const log = await S.recordDamage(dmg.item.id, serial ? 1 : dmg.qty, dmg.reason, dmg.note.trim(), serial);
     dmg = { ...dmgFresh(), reason: dmg.reason, saved: log };
     takeSession.unshift({ name: log.item_name, what: `Damage ${log.ref_code}: ${log.quantity} off stock (${DAMAGE_REASONS[log.reason_category] || log.reason_category})`, time: hhmm(), bad: false, undo: null });
     hideOverlay(); drawTake();
@@ -1383,7 +1387,7 @@ $("#typerKbd").onclick = (e) => {
   if (k === "DONE") {
     $("#typer").classList.remove("on");
     if (searchTarget === "serial" && serialTyped.trim()) bookScan(serialTyped);
-    if (searchTarget === "dmgserial" && serialTyped.trim()) dmgScan(serialTyped.trim());
+    if (searchTarget === "dmgserial") { if (serialTyped.trim()) dmgScan(serialTyped.trim()); else if (dmg.item && !dmg.unit) { dmg.serialText = ""; drawTake(); } }
     if (searchTarget === "location" && locTyped.trim() && locDone) locDone(locTyped.trim());
     return;
   }
