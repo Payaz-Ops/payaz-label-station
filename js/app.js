@@ -1578,8 +1578,8 @@ function drawProd() {
   $("#prodGrid").innerHTML = prodTiles.map((t) => {
     const n = canBuild(t), hasParts = (t.recipe || []).length > 0;
     const serialPart = (t.recipe || []).some((x) => { const it = S.items.find((i) => i.id === x.item_id); return it && it.tracking_type === "serial"; });
-    return `<button class="ptile" data-id="${esc(t.id)}"><div class="pic" ${t.image_url ? `style="background-image:url('${esc(t.image_url)}')"` : ""}>${t.image_url ? "" : "&#128230;"}</div>` +
-      `<div class="nm">${esc(t.name || "(no name)")}</div><div class="cb ${n ? "" : "none"}">${!hasParts ? "No parts set up" : serialPart ? "Has a tablet or card reader in it: ask a manager" : n ? `Can build ${n}` : "Not enough parts"}</div></button>`;
+    const badge = !hasParts ? `<div class="cb none">No parts set up</div>` : serialPart ? `<div class="cb warn">Has a tablet or card reader: ask a manager</div>` : `<div class="cb ${n ? "" : "none"}">${n} ready</div>`;
+    return `<button class="ptile" data-id="${esc(t.id)}"><div class="pic">${tilePic(t)}</div><div class="nm">${esc(t.name || "(no name)")}</div>${badge}</button>`;
   }).join("");
   $("#prodEmpty").textContent = prodTiles.length ? "" : "No Production Floor tiles yet. Set them up on the website: Payaz Stock > Production Floor.";
   $("#prodGrid").querySelectorAll("[data-id]").forEach((b) => (b.onclick = () => openBuild(prodTiles.find((t) => t.id === b.dataset.id))));
@@ -1588,6 +1588,9 @@ function drawProd() {
     (x.undone ? "" : `<button class="undo" data-undo="${i}">Undo</button>`) + `</div></div>`).join("") : `<div class="it"><small>Nothing built yet.</small></div>`);
   $("#prodSession").querySelectorAll("[data-undo]").forEach((b) => (b.onclick = () => undoBuildEntry(prodSession[+b.dataset.undo])));
 }
+// The tile's picture from Payaz Stock (a box if it has none or it won't load)
+const tilePic = (t) => t.image_url && /^(https?:|data:image\/)/i.test(t.image_url)
+  ? `<img src="${esc(t.image_url)}" alt="" onerror="this.replaceWith(document.createTextNode('\u{1F4E6}'))">` : "&#128230;";
 function openBuild(t) {
   if (!t) return;
   bsTile = t; bsQty = 1; drawBuild(); $("#buildSheet").classList.add("on"); poke();
@@ -1596,7 +1599,8 @@ function drawBuild() {
   const t = bsTile, recipe = (t.recipe || []).filter((x) => x && x.item_id && Number(x.quantity_per_unit) > 0);
   let short = false, serial = false;
   $("#bsName").textContent = t.name || "(no name)";
-  $("#bsMeta").textContent = recipe.length ? `${recipe.length} part${recipe.length === 1 ? "" : "s"} \u00b7 can build ${canBuild(t)} with the stock there is now` : "";
+  $("#bsPic").innerHTML = tilePic(t);
+  $("#bsMeta").textContent = recipe.length ? `${recipe.length} part${recipe.length === 1 ? "" : "s"} \u00b7 ${canBuild(t)} ready with the stock there is now` : "";
   $("#bsParts").innerHTML = recipe.map((x) => {
     const it = S.items.find((i) => i.id === x.item_id), have = Number(it && it.quantity_on_hand) || 0, need = x.quantity_per_unit * bsQty;
     const bad = !it || have < need || (it && it.tracking_type === "serial");

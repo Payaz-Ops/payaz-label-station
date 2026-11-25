@@ -84,11 +84,16 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .big.prod   { background: linear-gradient(135deg, #f59e0b, #c2410c); }
 #prod.on { display: flex; gap: 14px; min-height: 0; }
 .prodgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; overflow-y: auto; align-content: start; flex: 1; min-height: 0; }
-.ptile { background: var(--card); border-radius: var(--r); padding: 0; overflow: hidden; display: flex; flex-direction: column; text-align: left; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-.ptile .pic { height: 120px; background: #eef2f6 center / cover no-repeat; display: flex; align-items: center; justify-content: center; font-size: 44px; }
-.ptile .nm { padding: 10px 14px 2px; font-size: 21px; font-weight: 900; color: var(--navy); }
-.ptile .cb { padding: 0 14px 12px; font-size: 15px; font-weight: 700; color: #3c7a12; }
-.ptile .cb.none { color: #b3263a; }
+.ptile { background: var(--card); border-radius: 18px; padding: 18px 12px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.ptile .pic { width: 120px; height: 120px; border-radius: 16px; background: #e9edf2; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 48px; }
+.ptile .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ptile .nm { font-size: 22px; font-weight: 800; color: var(--navy); line-height: 1.15; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ptile .cb { font-size: 17px; font-weight: 600; padding: 5px 14px; border-radius: 99px; background: #e4f3d5; color: #2f6b0e; }
+.ptile .cb.none { background: #fde2e4; color: #b3263a; }
+.ptile .cb.warn { background: #fff1c2; color: #6b4e00; font-size: 14px; white-space: normal; }
+#buildSheet .bshead { display: flex; gap: 16px; align-items: center; }
+#buildSheet .bshead .pic { width: 84px; height: 84px; border-radius: 14px; background: #e9edf2; overflow: hidden; flex: none; display: flex; align-items: center; justify-content: center; font-size: 36px; }
+#buildSheet .bshead .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 #buildSheet { position: fixed; inset: 0; background: rgba(31,26,92,.55); display: none; align-items: center; justify-content: center; z-index: 7; }
 #buildSheet.on { display: flex; }
 #buildSheet .box { background: #fff; border-radius: 20px; padding: 22px 26px; width: 92%; max-width: 900px; max-height: 92vh; display: flex; flex-direction: column; gap: 12px; }
@@ -523,8 +528,7 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
   <div class="btns"><button class="ghost" id="locType">&#9000; Type a new location</button><button class="ghost" id="locClose">Cancel</button></div>
 </div></div>
 <div id="buildSheet"><div class="box">
-  <h2 id="bsName"></h2>
-  <div class="meta" id="bsMeta"></div>
+  <div class="bshead"><div class="pic" id="bsPic"></div><div><h2 id="bsName"></h2><div class="meta" id="bsMeta"></div></div></div>
   <div class="parts"><table><thead><tr><th>Part</th><th class="n">Each</th><th class="n">Taking</th><th class="n">In stock</th></tr></thead><tbody id="bsParts"></tbody></table></div>
   <div class="bookmsg" id="bsMsg"></div>
   <div class="buildrow">
