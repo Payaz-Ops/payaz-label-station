@@ -10,7 +10,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const printer = new Printer();
 
-// The two label screens. Box types: "pad" = number keypad (with PZ, and RR for RR-2026-0004),
+// The two label screens. Box types: "pad" = number keypad (with PZ on the end, and RR at the start for RR123456),
 // "scan" = barcode scanner/camera (or type it), "text" = on-screen keyboard.
 const MODES = {
   order: {
@@ -156,11 +156,6 @@ function render() {
 
 /* ---------- typing ---------- */
 const maxLen = (k) => (k === "order" ? 30 : 40);
-// RR-2026-0004: "RR-", the 4-digit year, then a dash once the year is complete
-function rrFormat(digits, typing) {
-  const year = digits.slice(0, 4), rest = digits.slice(4);
-  return "RR-" + year + (rest ? "-" + rest : year.length === 4 && typing ? "-" : "");
-}
 function press(key) {
   poke();
   const f = fieldOf(active);
@@ -170,16 +165,12 @@ function press(key) {
     setActive(after.find((k) => !vals[k]) || after[0] || active);
     return;
   }
-  if (key === "DEL") { v = v.slice(0, -1); if (v === "RR") v = ""; }
+  if (key === "DEL") { v = v.slice(0, -1); if (v === "R") v = ""; }
   else if (key === "CASE") { caseMode = nextCase(); render(); return; }
-  // RR orders look like RR-2026-0004: RR goes at the start, the dashes go in by
-  // themselves. Tapping RR again takes it off. PZ goes on the end (48374PZ).
-  else if (key === "RR") { v = v.startsWith("RR-") ? v.slice(3).replace(/-/g, "") : rrFormat(v.replace(/\D/g, ""), false); }
-  else if (key === "PZ") { if (!v.startsWith("RR-")) v = v.replace(/PZ$/, "") + "PZ"; }
-  else if (active === "order" && v.startsWith("RR-")) {
-    const digits = v.slice(3).replace(/\D/g, "");
-    if (/^\d$/.test(key) && digits.length < 10) v = rrFormat(digits + key, true);
-  }
+  // RR orders look like RR123456: RR goes at the start (tapping it again takes it
+  // off). PZ goes on the end (48374PZ).
+  else if (key === "RR") { v = v.startsWith("RR") ? v.slice(2) : "RR" + v.replace(/\D/g, ""); }
+  else if (key === "PZ") { if (!v.startsWith("RR")) v = v.replace(/PZ$/, "") + "PZ"; }
   else if (v.length < maxLen(active)) {
     if (active === "order" && /PZ$/.test(v)) return;
     if (key === "SPACE") key = " ";
