@@ -105,7 +105,7 @@ function offDetails(direction, d = {}) {
   }
   return { reason, takenBy, place };
 }
-const offText = (d) => ` (${OFF_SITE_REASONS[d.reason]}) by ${d.takenBy}${d.place ? ` to ${d.place}` : ""}`;
+const offText = (d) => ` (${OFF_SITE_REASONS[d.reason]}) by ${d.takenBy}${d.place ? `. Note: ${d.place}` : ""}`;
 export const offSite = (item) => Math.max(0, Number(item && item.qty_off_site) || 0);
 export const onSite = (item) => Math.max(0, (Number(item && item.quantity_on_hand) || 0) - offSite(item));
 const rid = (prefix) => prefix + "_" + Math.random().toString(36).substring(2, 11);
@@ -653,14 +653,14 @@ export const stock = {
       if (direction === "off" && n > on) throw new Error(`Only ${on} ${item.name} on site.`);
       if (direction === "on" && n > off) throw new Error(`Only ${off} ${item.name} off site.`);
       const newOff = direction === "off" ? off + n : off - n, newOn = direction === "off" ? on - n : on + n;
-      const now = new Date().toISOString(), where = place ? ` (${place})` : "";
+      const now = new Date().toISOString();
       tx.update(ref, { qty_off_site: newOff, updated_at: now });
       const id = rid("mov");
       tx.set(doc(db, "movements", id), {
         id, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU || "",
         serial_number: null, direction: "adjustment", quantity_delta: n,
-        location_from: direction === "off" ? item.location || "" : `Off site${where}`,
-        location_to: direction === "off" ? `Off site${where}` : item.location || "",
+        location_from: direction === "off" ? item.location || "" : "Off site",
+        location_to: direction === "off" ? `Off site (${OFF_SITE_REASONS[d.reason]})` : item.location || "",
         user_id: who.id, user_name: who.name,
         reason: `${direction === "off" ? "[Off site]" : "[Back on site]"} ${n} ${direction === "off" ? `taken off site${offText(d)}` : "brought back on site"}. On site ${on} \u2192 ${newOn}, off site ${off} \u2192 ${newOff}, total ${item.quantity_on_hand} unchanged`,
         source: "manual",
@@ -706,7 +706,6 @@ export const stock = {
         ? { status: "off_site", off_site_at: now, off_site_by_id: who.id, off_site_by_name: who.name, off_site_place: place, off_site_reason: d.reason, off_site_taken_by: d.takenBy, updated_at: now }
         : { status: "in_stock", on_site_at: now, on_site_by_id: who.id, on_site_by_name: who.name, updated_at: now };
       tx.update(unitRef, changes);
-      const fromPlace = direction === "off" ? place : unit.off_site_place || "";
       if (item) {
         const off = offSite(item), newOff = direction === "off" ? off + 1 : Math.max(0, off - 1);
         tx.update(itemRef, { qty_off_site: newOff, updated_at: now });
@@ -714,8 +713,8 @@ export const stock = {
         tx.set(doc(db, "movements", id), {
           id, timestamp: now, item_id: item.id, item_name: item.name, item_sku: item.SKU || "",
           serial_number: serial, direction: "adjustment", quantity_delta: 1,
-          location_from: direction === "off" ? item.location || "" : `Off site${fromPlace ? ` (${fromPlace})` : ""}`,
-          location_to: direction === "off" ? `Off site${place ? ` (${place})` : ""}` : item.location || "",
+          location_from: direction === "off" ? item.location || "" : `Off site${unit.off_site_reason ? ` (${OFF_SITE_REASONS[unit.off_site_reason]})` : ""}`,
+          location_to: direction === "off" ? `Off site (${OFF_SITE_REASONS[d.reason]})` : item.location || "",
           user_id: who.id, user_name: who.name,
           reason: `${direction === "off" ? "[Off site]" : "[Back on site]"} ${serial} ${direction === "off" ? `taken off site${offText(d)}` : `brought back on site (was ${OFF_SITE_REASONS[unit.off_site_reason] || "off site"}${unit.off_site_taken_by ? `, taken by ${unit.off_site_taken_by}` : ""})`}. Off site ${off} \u2192 ${newOff}, total ${item.quantity_on_hand} unchanged`,
           source: "scan",
@@ -724,7 +723,7 @@ export const stock = {
       }
       const eid = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const ev = { id: eid, serial_key: key, serial_number: serial, type: direction === "off" ? "off_site" : "on_site", item_id: unit.item_id, item_name: unit.item_name, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now };
-      if (direction === "off") ev.note = `${OFF_SITE_REASONS[d.reason]}, taken by ${d.takenBy}${place ? `, to ${place}` : ""}`;
+      if (direction === "off") ev.note = `${OFF_SITE_REASONS[d.reason]}, taken by ${d.takenBy}${place ? `. Note: ${place}` : ""}`;
       tx.set(doc(db, "serial_events", eid), ev);
       out = { kind: "moved", unit: { ...unit, ...changes } };
     });

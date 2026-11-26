@@ -266,7 +266,7 @@ async function checkSerial(k) { // k can change if the unit is moved to its prop
     else if (u.status === "dispatched") info = vals.order && u.order_number === vals.order
       ? { tone: "ok", text: `✓ Already recorded on this order` }
       : { tone: "warn", text: `Already sent on order ${u.order_number} (${shortDate(u.dispatched_at)}). Check before sending.` };
-    else if (u.status === "off_site") info = { tone: "warn", text: `Recorded as off site${u.off_site_place ? ` (${u.off_site_place})` : ""}. A manager must bring it back on site before it's sent.` };
+    else if (u.status === "off_site") info = { tone: "warn", text: `Recorded as off site${u.off_site_reason ? ` (${OFF_SITE_REASONS[u.off_site_reason]}${u.off_site_taken_by ? `, taken by ${u.off_site_taken_by}` : ""})` : ""}. A manager must bring it back on site before it's sent.` };
     else info = { tone: "warn", text: `Recorded as ${u.status === "damaged" ? "damaged" : u.status} in Payaz Stock. Check before sending.` };
   } catch (e) {
     info = { tone: "warn", text: "Couldn't check Payaz Stock: " + friendlyError(e) };
@@ -718,7 +718,7 @@ async function stockScan(code) {
 const stockLabelValues = (i) => ({ name: i.name || "", location: i.location || "", code: S.labelCode(i) });
 
 // Item pop-up: print its label
-const serialStatusText = (u) => u.status === "in_stock" ? "in stock" : u.status === "off_site" ? `off site${u.off_site_place ? ` (${u.off_site_place})` : ""}` : u.status === "dispatched" ? `sent on order ${u.order_number || "?"}` : u.status;
+const serialStatusText = (u) => u.status === "in_stock" ? "in stock" : u.status === "off_site" ? `off site${u.off_site_reason ? ` (${OFF_SITE_REASONS[u.off_site_reason]})` : ""}` : u.status === "dispatched" ? `sent on order ${u.order_number || "?"}` : u.status;
 function openSheet(item, note = "") {
   if (!item) return;
   sheetItem = item; sheetCopies = 1;
@@ -1232,7 +1232,7 @@ async function offScan(code) {
     const r = await S.moveSerialOffSite(code, off.dir, offDetails());
     const sn = esc(S.normaliseSerial(code));
     if (r.kind === "moved") {
-      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site (${esc(OFF_SITE_REASONS[off.reason])}) by ${esc(off.takenBy)}${off.place ? ` to ${esc(off.place)}` : ""}` : "back on site"}` };
+      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site (${esc(OFF_SITE_REASONS[off.reason])}) by ${esc(off.takenBy)}${off.place ? `. Note: ${esc(off.place)}` : ""}` : "back on site"}` };
       takeSession.unshift({ name: r.unit.item_name, what: `${S.normaliseSerial(code)} ${off.dir === "off" ? `off site: ${OFF_SITE_REASONS[off.reason]}, ${off.takenBy}` : "back on site"}`, time: hhmm(), bad: false, undo: null });
       offLoadUnits();
     } else if (r.kind === "already") off.msg = { tone: "bad", text: `<b>${sn}</b> is already ${off.dir === "off" ? "off site" : "on site"}.` };
@@ -1268,7 +1268,7 @@ function drawOffSite(card) {
     ${off.dir === "off" ? `<div class="lbl dmglbl" style="margin:2px 0 -4px">Why is it going off site?</div>
       <div class="offwhy" id="offWhy">${Object.entries(OFF_SITE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${off.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>
       <div class="offrow"><button class="field" id="offTaken"><div class="lbl">Taken off site by</div><div class="val${off.takenBy ? "" : " empty"}">${off.takenBy ? esc(off.takenBy) : "Tap to type who"}</div></button>
-      <button class="field" id="offPlace"><div class="lbl">Where to (optional)</div><div class="val${off.place ? "" : " empty"}">${off.place ? esc(off.place) : "e.g. Safe store"}</div></button></div>` : ""}
+      <button class="field" id="offPlace"><div class="lbl">Notes (optional)</div><div class="val${off.place ? "" : " empty"}">${off.place ? esc(off.place) : "e.g. safe store, back Friday"}</div></button></div>` : ""}
     ${it ? `<h2 style="margin:4px 0 0">${esc(it.name || "(no name)")}</h2>
       <div class="meta">On site <b>${onSite(it)}</b> \u00b7 off site <b>${offSite(it)}</b> \u00b7 total ${onSite(it) + offSite(it)}</div>
       <div class="counter" style="margin:0"><button id="offMinus">&minus;</button><button class="num"><small>${off.dir === "off" ? "TAKING OFF SITE" : "BRINGING BACK"}</small><b>${off.qty}</b></button><button id="offPlus">+</button></div>
