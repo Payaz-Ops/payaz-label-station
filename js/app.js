@@ -1049,6 +1049,7 @@ function takeResult() {
 function drawTake() {
   document.querySelectorAll("#takeModes button").forEach((b) => b.classList.toggle("on", b.dataset.m === takeMode));
   $("#modeOffsite").style.display = S.isManager ? "" : "none";
+  $("#takeNew").style.display = takeMode === "damage" ? "none" : "";
   if (takeMode === "offsite" && !S.isManager) takeMode = "take";
   const M = MODE_TEXT[takeMode], card = $("#takeCard");
   if (takeMode === "offsite") drawOffSite(card);
@@ -1317,32 +1318,32 @@ function drawDamage(card) {
     $("#dmgDone").onclick = () => { dmg = { ...dmgFresh(), reason: dmg.reason }; drawTake(); };
     return;
   }
-  if (!dmg.item) {
-    card.innerHTML = `<div class="scanwait"><div class="beam"></div><h2>Scan the damaged item</h2>
-      <p style="margin:0;color:var(--muted);font-size:17px">Scan its barcode or shelf label. For tablets and card readers, scan the serial number. Or tap Find an item.</p>
-      <div class="btns" style="display:flex;gap:10px"><button class="ghost cam" id="dmgCam">&#128247; Use camera</button></div></div>`;
-    $("#dmgCam").onclick = () => scanWithCamera((c) => dmgScan(c.trim()));
-    return;
-  }
-  const item = S.items.find((i) => i.id === dmg.item.id) || dmg.item;
-  const serialItem = item.tracking_type === "serial", hasSerial = !!(dmg.unit && dmg.unit.status === "in_stock");
-  const ready = serialItem ? hasSerial : !dmg.unit || hasSerial;
-  card.innerHTML = `<h2>${esc(item.name || "(no name)")}</h2>
-    <div class="meta">SKU ${esc(item.SKU || "-")} \u00b7 In stock now: <b>${recorded(item)}</b>${dmg.unit ? ` \u00b7 Serial <b>${esc(dmg.unit.serial_number)}</b>` : ""}</div>
-    ${!serialItem && !dmg.unit ? `<button class="field" id="dmgSerial" style="padding:8px 14px"><div class="lbl">Serial number (if the unit has one)</div><div class="val${dmg.serialText ? "" : " empty"}" style="font-size:20px">${dmg.serialText ? esc(dmg.serialText) + ` <small style="font-weight:500;color:var(--muted)">\u00b7 one unit per serial, so quantity is 1</small>` : "Scan it, or tap to type it"}</div></button>` : ""}
-    ${dmg.unit || serialItem || dmg.serialText ? "" : `<div class="counter"><button id="dmgMinus">&minus;</button><button class="num" id="dmgNum"><small>DAMAGED</small><b>${dmg.qty}</b></button><button id="dmgPlus">+</button></div>`}
-    ${serialItem && !hasSerial ? `<div class="takebtns"><button class="ghost cam" id="dmgCam" style="min-height:64px">&#128247; Camera</button><button class="ghost" id="dmgType" style="min-height:64px">&#9000; Type the serial</button></div>` : ""}
-    <div class="seg dmgwhy" id="dmgWhy">${Object.entries(DAMAGE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${dmg.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>
-    <button class="field" id="dmgNote" style="padding:8px 14px"><div class="lbl">What happened? (optional)</div><div class="val${dmg.note ? "" : " empty"}" style="font-size:20px">${dmg.note ? esc(dmg.note) : "Tap to type a note, e.g. cracked screen"}</div></button>
+  // The same form as Payaz Stock's "Report Damage, Loss or Discrepancy"
+  const item = dmg.item ? S.items.find((i) => i.id === dmg.item.id) || dmg.item : null;
+  const serialItem = !!(item && item.tracking_type === "serial"), hasSerial = !!(dmg.unit && dmg.unit.status === "in_stock");
+  const ready = !!item && (serialItem ? hasSerial : !dmg.unit || hasSerial);
+  const oneUnit = !!(dmg.unit || dmg.serialText || serialItem);
+  const serialVal = dmg.unit ? `<span style="font-family:monospace">${esc(dmg.unit.serial_number)}</span>${dmg.unit.status === "in_stock" ? "" : ` <small style="color:#b3263a">\u00b7 ${esc(serialStatusText(dmg.unit))}</small>`}`
+    : dmg.serialText ? `<span style="font-family:monospace">${esc(dmg.serialText)}</span>`
+    : serialItem ? `<span style="color:#b3263a">Needed: scan or tap to type the serial of the damaged unit</span>` : "Type it, or scan the serial barcode";
+  card.innerHTML = `<div class="dmghead"><h2>Report Damage, Loss or Discrepancy</h2><div class="meta">Log broken components or missing stock for audit</div></div>
+    <button class="field" id="dmgItem"><div class="lbl">Stock Item / Component</div><div class="val${item ? "" : " empty"}">${item ? `${esc(item.name || "(no name)")} <small style="font-weight:500;color:var(--muted)">(SKU: ${esc(item.SKU || "-")}) \u2014 Available: ${recorded(item)}</small>` : "Tap to choose an item, or scan its barcode"}</div></button>
+    ${item ? `<div class="meta" style="margin-top:-4px">Current stock on hand: <b>${recorded(item)}</b>${offSite(item) ? ` (+${offSite(item)} off site)` : ""} \u00b7 Location: ${esc(item.location || "-")}</div>` : ""}
+    <button class="field" id="dmgSerial"><div class="lbl">Serial number <span style="font-weight:500">(if the unit has one)</span></div><div class="val${dmg.unit || dmg.serialText ? "" : " empty"}">${serialVal}</div></button>
+    <div class="dmgrow">
+      <div><div class="lbl dmglbl">Quantity Affected</div>
+        <div class="counter dmgqty"><button id="dmgMinus" ${oneUnit ? "disabled" : ""}>&minus;</button><button class="num" id="dmgNum"><b>${oneUnit ? 1 : dmg.qty}</b></button><button id="dmgPlus" ${oneUnit ? "disabled" : ""}>+</button></div>
+        ${oneUnit ? `<div class="meta" style="font-size:13px">One unit per serial number</div>` : ""}</div>
+      <div style="flex:1"><div class="lbl dmglbl">Category / Reason</div>
+        <div class="dmgwhy" id="dmgWhy">${Object.entries(DAMAGE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${dmg.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div></div>
+    </div>
+    <button class="field" id="dmgNote"><div class="lbl">Notes / Details</div><div class="val${dmg.note ? "" : " empty"}">${dmg.note ? esc(dmg.note) : "Describe what happened (e.g. screen cracked, card reader failed QC test)\u2026"}</div></button>
     ${dmg.msg ? `<div class="bookmsg ${dmg.msg.tone}">${dmg.msg.text}</div>` : ""}
-    <div class="takebtns"><button class="ghost" id="dmgCancel" style="min-height:70px">Cancel</button><button class="print dmgsave" id="dmgSave" ${ready && !dmg.busy ? "" : "disabled"}>LOG DAMAGE</button></div>`;
-  if ($("#dmgMinus")) {
-    $("#dmgMinus").onclick = () => { dmg.qty = Math.max(1, dmg.qty - 1); drawTake(); poke(); };
-    $("#dmgPlus").onclick = () => { dmg.qty = Math.min(9999, dmg.qty + 1); drawTake(); poke(); };
-  }
-  if ($("#dmgCam")) $("#dmgCam").onclick = () => scanWithCamera((c) => dmgScan(c.trim()));
-  if ($("#dmgSerial")) $("#dmgSerial").onclick = () => { searchTarget = "dmgserial"; serialTyped = dmg.serialText; drawTyper(); $("#typer").classList.add("on"); };
-  if ($("#dmgType")) $("#dmgType").onclick = () => { searchTarget = "dmgserial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
+    <div class="takebtns"><button class="ghost" id="dmgCancel" style="min-height:66px">Cancel</button><button class="print dmgsave" id="dmgSave" ${ready && !dmg.busy ? "" : "disabled"}>&#128737; Log Damage &amp; Print Label</button></div>`;
+  $("#dmgItem").onclick = () => { pickForTake = true; stockSearch = ""; openStock("take"); };
+  $("#dmgSerial").onclick = () => { searchTarget = "dmgserial"; serialTyped = dmg.unit ? "" : dmg.serialText; drawTyper(); $("#typer").classList.add("on"); };
+  $("#dmgMinus").onclick = () => { dmg.qty = Math.max(1, dmg.qty - 1); drawTake(); poke(); };
+  $("#dmgPlus").onclick = () => { dmg.qty = Math.min(9999, dmg.qty + 1); drawTake(); poke(); };
   card.querySelectorAll("#dmgWhy button").forEach((b) => (b.onclick = () => { dmg.reason = b.dataset.v; drawTake(); poke(); }));
   $("#dmgNote").onclick = () => { searchTarget = "dmgnote"; drawTyper(); $("#typer").classList.add("on"); };
   $("#dmgCancel").onclick = () => { dmg = { ...dmgFresh(), reason: dmg.reason }; drawTake(); };

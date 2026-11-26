@@ -130,10 +130,22 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .buildrow .counter { margin: 0; }
 .buildrow .print { flex: 1; min-height: 84px; font-size: 28px; }
 .buildrow .ghost { min-height: 84px; }
-.dmgwhy { flex-wrap: wrap; }
 .offlist { font-size: 15px; color: var(--muted); line-height: 1.6; max-height: 120px; overflow-y: auto; }
 .offlist b { color: var(--navy); }
-.dmgwhy button { flex: 1 1 30%; min-height: 56px; font-size: 17px; }
+.dmghead h2 { margin: 0; }
+.dmghead .meta { margin-top: 2px; }
+.dmgrow { display: flex; gap: 16px; align-items: flex-start; }
+.dmglbl { font-size: 14px; font-weight: 700; color: var(--muted); margin: 0 0 6px; }
+.dmgqty { justify-content: flex-start; gap: 8px; margin: 0; }
+.dmgqty button { width: 60px; height: 60px; font-size: 32px; }
+.dmgqty .num { min-width: 90px; padding: 4px 12px; }
+.dmgqty .num b { font-size: 36px; }
+.dmgqty button:disabled { opacity: .35; }
+.dmgwhy { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.dmgwhy button { background: #eef2f6; border: 3px solid transparent; border-radius: 12px; min-height: 48px; font-size: 15px; font-weight: 700; padding: 6px 10px; text-align: left; }
+.dmgwhy button.on { border-color: var(--teal); background: #e3f6f7; }
+#takeCard .field { padding: 8px 14px; }
+#takeCard .field .val { font-size: 19px; }
 .dmgprev { display: flex; justify-content: center; }
 .dmgprev canvas { max-height: 190px; width: auto !important; box-shadow: 0 1px 6px rgba(0,0,0,.15); background: #fff; }
 .print.dmgsave { background: linear-gradient(90deg, var(--coral), #b3263a); }

@@ -87,11 +87,11 @@ async function server(path, body, idToken) {
 
 // Damage reasons, as in Payaz Stock's Report Damage form
 export const DAMAGE_REASONS = {
-  damaged_production: "Damaged in production",
-  broken_component: "Broken or faulty part",
-  inventory_discrepancy: "Count mismatch",
-  missing_loss: "Missing or lost",
-  other: "Other",
+  damaged_production: "Damaged in Production (e.g. Broken Tablet)",
+  broken_component: "Broken / Defective Component (e.g. Card Reader)",
+  inventory_discrepancy: "Stock Discrepancy / Count Mismatch",
+  missing_loss: "Missing / Shrinkage Loss",
+  other: "Other Issue",
 };
 // Stock kept off site (managers move it): still counted in quantity_on_hand, but
 // counts of the shelves only expect what's on site.
