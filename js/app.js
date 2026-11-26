@@ -1,7 +1,7 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
 import { loadLog, addLogEntry, deleteLogEntry, logRow, exportCsv } from "./log.js";
-import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS } from "./stock.js";
+import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
 const friendlyError = (window.__STOCK_MOCK__ && window.__STOCK_MOCK__.friendlyError) || realFriendly;
@@ -266,6 +266,7 @@ async function checkSerial(k) { // k can change if the unit is moved to its prop
     else if (u.status === "dispatched") info = vals.order && u.order_number === vals.order
       ? { tone: "ok", text: `✓ Already recorded on this order` }
       : { tone: "warn", text: `Already sent on order ${u.order_number} (${shortDate(u.dispatched_at)}). Check before sending.` };
+    else if (u.status === "off_site") info = { tone: "warn", text: `Recorded as off site${u.off_site_place ? ` (${u.off_site_place})` : ""}. A manager must bring it back on site before it's sent.` };
     else info = { tone: "warn", text: `Recorded as ${u.status === "damaged" ? "damaged" : u.status} in Payaz Stock. Check before sending.` };
   } catch (e) {
     info = { tone: "warn", text: "Couldn't check Payaz Stock: " + friendlyError(e) };
@@ -292,7 +293,7 @@ async function recordDispatch(values) {
       else if (r.kind === "same_order") out.done.push(`${name} ${values[k]} was already on this order`);
       else if (r.kind === "not_booked_in") out.done.push(`${name} ${values[k]} recorded on order ${values.order}${r.unit && r.unit.item_id ? ` (${r.unit.item_name})` : ""}. It wasn't booked in, so the stock count hasn't changed.`);
       else if (r.kind === "already_sent") out.problems.push(`${r.unit.item_name || name} ${values[k]} was already sent on order ${r.unit.order_number}. A manager has been told.`);
-      else out.problems.push(`${r.unit.item_name || name} ${values[k]} is recorded as ${r.unit.status} in Payaz Stock. A manager has been told.`);
+      else out.problems.push(`${r.unit.item_name || name} ${values[k]} is recorded as ${serialStatusText(r.unit)} in Payaz Stock, so it wasn't marked as sent. ${r.unit.status === "off_site" ? "A manager must bring it back on site first." : "A manager has been told."}`);
     } catch (e) {
       if (isNetworkError(e)) {
         // No internet: keep it and send it when the connection is back
@@ -717,7 +718,7 @@ async function stockScan(code) {
 const stockLabelValues = (i) => ({ name: i.name || "", location: i.location || "", code: S.labelCode(i) });
 
 // Item pop-up: print its label
-const serialStatusText = (u) => u.status === "in_stock" ? "in stock" : u.status === "dispatched" ? `sent on order ${u.order_number || "?"}` : u.status;
+const serialStatusText = (u) => u.status === "in_stock" ? "in stock" : u.status === "off_site" ? `off site${u.off_site_place ? ` (${u.off_site_place})` : ""}` : u.status === "dispatched" ? `sent on order ${u.order_number || "?"}` : u.status;
 function openSheet(item, note = "") {
   if (!item) return;
   sheetItem = item; sheetCopies = 1;
@@ -1037,17 +1038,21 @@ const MODE_TEXT = {
   add: { name: "Add stock", counter: "ADDING", hint: "Scan each unit you're putting into stock." },
   remove: { name: "Remove stock", counter: "REMOVING", hint: "Scan each unit you're taking out of stock." },
   spot: { name: "Spot check", hint: "" },
+  offsite: { name: "Off site", hint: "" },
   bookin: { name: "Book in serials", hint: "Scan the product barcode (or its shelf label), or tap Find an item. Then scan the serial number on each unit." },
 };
-const recorded = (i) => Number(i.quantity_on_hand) || 0;
+const recorded = (i) => onSite(i); // what should be on the shelves (stock kept off site isn't)
 function takeResult() {
   const old = recorded(takeItem);
   return takeMode === "take" ? takeCount : takeMode === "add" ? old + takeCount : Math.max(0, old - takeCount);
 }
 function drawTake() {
   document.querySelectorAll("#takeModes button").forEach((b) => b.classList.toggle("on", b.dataset.m === takeMode));
+  $("#modeOffsite").style.display = S.isManager ? "" : "none";
+  if (takeMode === "offsite" && !S.isManager) takeMode = "take";
   const M = MODE_TEXT[takeMode], card = $("#takeCard");
-  if (takeMode === "damage") drawDamage(card);
+  if (takeMode === "offsite") drawOffSite(card);
+  else if (takeMode === "damage") drawDamage(card);
   else if (takeMode === "spot") drawSpot(card);
   else if (takeMode === "bookin" && bookItem) drawBookIn(card);
   else if (!takeItem) {
@@ -1058,7 +1063,7 @@ function drawTake() {
   } else {
     const old = recorded(takeItem), res = takeResult(), diff = res - old;
     card.innerHTML = `<h2>${esc(takeItem.name || "(no name)")}</h2>
-      <div class="meta">SKU ${esc(takeItem.SKU || "-")} · In stock now: <b>${old}</b></div>
+      <div class="meta">SKU ${esc(takeItem.SKU || "-")} · ${offSite(takeItem) ? `On site now: <b>${old}</b> (${offSite(takeItem)} more off site, not counted here)` : `In stock now: <b>${old}</b>`}</div>
       <button class="locbtn${takeLoc !== (takeItem.location || "") ? " moved" : ""}" id="tkLoc">&#128205; Location: <b>${esc(takeLoc || "none")}</b>${takeLoc !== (takeItem.location || "") ? ` (moves from ${esc(takeItem.location || "none")} when saved)` : " · tap to change"}</button>
       <div class="counter"><button id="tkMinus">&minus;</button><button class="num" id="tkNum"><small>${M.counter}</small><b>${takeCount}</b></button><button id="tkPlus">+</button></div>
       <div class="change ${diff > 0 ? "up" : diff < 0 ? "down" : ""}">${diff === 0 ? `Stays at ${old}` : `${old} \u2192 ${res} (${diff > 0 ? "+" : ""}${diff})`}</div>
@@ -1102,6 +1107,7 @@ async function undoEntry(x) {
 function takeStart(item) {
   if (takeMode === "bookin") { bookStart(item); return; }
   if (takeMode === "damage") { dmgStart(item); return; }
+  if (takeMode === "offsite") { offStart(item); return; }
   if (item && item.tracking_type === "serial") {
     // Serial-tracked: the count is locked, units are booked in one by one
     overlay(`${item.name} is tracked by serial number`, "Its stock count can't be changed here. Book new units in by their serial numbers; they come off stock when sent on an Order Label.", false, false,
@@ -1195,6 +1201,78 @@ function bookScan(code) {
       bookNote("bad", `<b>${esc(serial)}</b> wasn't saved: ${esc(friendlyError(e))}`, serial, "Not saved: " + friendlyError(e));
     }
   });
+}
+
+/* ---------- off site (managers): units kept off site to keep them safe ---------- */
+// Scan a tablet or card reader serial and it moves at once; scan a product counted by
+// quantity and choose how many. Same records as Payaz Stock's Off site page.
+let off = { dir: "off", place: "", item: null, qty: 1, msg: null, busy: false };
+function offStart(item) {
+  if (item.tracking_type === "serial") { off.msg = { tone: "", text: `${esc(item.name)} is tracked by serial number: scan the serial number on each unit.` }; drawTake(); return; }
+  if (off.item && off.item.id === item.id) off.qty++;
+  else { off.item = item; off.qty = 1; off.msg = null; }
+  drawTake(); poke();
+}
+async function offScan(code) {
+  code = (code || "").trim();
+  if (!code || off.busy) return;
+  const product = S.findByCode(code);
+  if (product) { offStart(product); return; }
+  off.busy = true; off.msg = { tone: "", text: `Saving <b>${esc(S.normaliseSerial(code))}</b>…` }; drawTake();
+  try {
+    const r = await S.moveSerialOffSite(code, off.dir, off.place);
+    const sn = esc(S.normaliseSerial(code));
+    if (r.kind === "moved") {
+      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site${off.place ? ` to ${esc(off.place)}` : ""}` : "back on site"}` };
+      takeSession.unshift({ name: r.unit.item_name, what: `${S.normaliseSerial(code)} ${off.dir === "off" ? "off site" : "back on site"}`, time: hhmm(), bad: false, undo: null });
+    } else if (r.kind === "already") off.msg = { tone: "bad", text: `<b>${sn}</b> is already ${off.dir === "off" ? "off site" : "on site"}.` };
+    else if (r.kind === "not_here") off.msg = { tone: "bad", text: `<b>${sn}</b> (${esc(r.unit.item_name)}) is recorded as ${esc(serialStatusText(r.unit))}, so it can't be moved ${off.dir} site.` };
+    else off.msg = { tone: "bad", text: `<b>${sn}</b> isn't booked in, and no product has that barcode.` };
+  } catch (e) {
+    off.msg = { tone: "bad", text: `Not saved: ${esc(friendlyError(e))}` };
+  } finally { off.busy = false; drawTake(); poke(); }
+}
+async function offSave() {
+  if (!off.item || off.busy) return;
+  off.busy = true;
+  const item = off.item, n = off.qty, dir = off.dir;
+  overlay("Saving…", item.name, false, true);
+  try {
+    const r = await S.moveQuantityOffSite(item.id, dir, n, off.place);
+    hideOverlay();
+    off.item = null;
+    off.msg = { tone: "good", text: `\u2713 ${n} \u00d7 <b>${esc(item.name)}</b> ${dir === "off" ? "taken off site" : "brought back on site"}. On site now ${r.onSite}, off site ${r.offSite}.` };
+    takeSession.unshift({ name: item.name, what: `${n} ${dir === "off" ? "off site" : "back on site"}`, time: hhmm(), bad: false, undo: null });
+  } catch (e) { overlay("Couldn't save", friendlyError(e), true); }
+  finally { off.busy = false; drawTake(); }
+}
+function drawOffSite(card) {
+  const offItems = S.items.filter((i) => offSite(i) > 0).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const it = off.item && (S.items.find((i) => i.id === off.item.id) || off.item);
+  const max = it ? (off.dir === "off" ? onSite(it) : offSite(it)) : 0;
+  if (it) off.qty = Math.max(1, Math.min(off.qty, Math.max(1, max)));
+  card.innerHTML = `<div class="seg" id="offDir"><button data-v="off" class="${off.dir === "off" ? "on" : ""}">Taking off site</button><button data-v="on" class="${off.dir === "on" ? "on" : ""}">Bringing back on site</button></div>
+    ${off.dir === "off" ? `<button class="field" id="offPlace" style="padding:8px 14px"><div class="lbl">Where to (optional)</div><div class="val${off.place ? "" : " empty"}" style="font-size:20px">${off.place ? esc(off.place) : "Tap to type it, e.g. Safe store"}</div></button>` : ""}
+    ${it ? `<h2>${esc(it.name || "(no name)")}</h2>
+      <div class="meta">On site <b>${onSite(it)}</b> \u00b7 off site <b>${offSite(it)}</b> \u00b7 total ${recorded(it) + offSite(it)}</div>
+      <div class="counter"><button id="offMinus">&minus;</button><button class="num"><small>${off.dir === "off" ? "TAKING OFF SITE" : "BRINGING BACK"}</small><b>${off.qty}</b></button><button id="offPlus">+</button></div>
+      ${max ? "" : `<div class="bookmsg bad">None ${off.dir === "off" ? "on site" : "off site"} to move.</div>`}
+      <div class="takebtns"><button class="ghost" id="offCancel" style="min-height:70px">Cancel</button><button class="print" id="offSave" ${max && !off.busy ? "" : "disabled"}>SAVE</button></div>`
+    : `<div class="scanwait" style="flex:1"><div class="beam"></div><h2>Scan a serial number or a product</h2>
+      <p style="margin:0;color:var(--muted);font-size:17px">Tablets and card readers: scan the serial on each unit, it moves straight away. Other stock: scan its barcode or tap Find an item, then choose how many.</p>
+      <div class="btns" style="display:flex;gap:10px"><button class="ghost cam" id="offCam">&#128247; Use camera</button><button class="ghost" id="offType">&#9000; Type a serial</button></div></div>`}
+    ${off.msg ? `<div class="bookmsg ${off.msg.tone}">${off.msg.text}</div>` : ""}
+    <div class="offlist"><b>Off site now:</b> ${offItems.length ? offItems.map((i) => `${esc(i.name)} <b>${offSite(i)}</b>`).join(" \u00b7 ") : "nothing"}</div>`;
+  card.querySelectorAll("#offDir button").forEach((b) => (b.onclick = () => { off.dir = b.dataset.v; off.msg = null; drawTake(); poke(); }));
+  if ($("#offPlace")) $("#offPlace").onclick = () => { searchTarget = "offplace"; drawTyper(); $("#typer").classList.add("on"); };
+  if ($("#offCam")) $("#offCam").onclick = () => scanWithCamera((c) => offScan(c.trim()));
+  if ($("#offType")) $("#offType").onclick = () => { searchTarget = "offserial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
+  if ($("#offMinus")) {
+    $("#offMinus").onclick = () => { off.qty = Math.max(1, off.qty - 1); drawTake(); poke(); };
+    $("#offPlus").onclick = () => { off.qty = Math.min(Math.max(1, max), off.qty + 1); drawTake(); poke(); };
+    $("#offCancel").onclick = () => { off.item = null; drawTake(); };
+    $("#offSave").onclick = offSave;
+  }
 }
 
 /* ---------- log damage (same records as Payaz Stock's Report Damage) ---------- */
@@ -1296,6 +1374,7 @@ async function takeScan(code) {
   if (takeMode === "bookin") { bookScan(code); return; }
   if (takeMode === "spot") { spotScan(code); return; }
   if (takeMode === "damage") { dmgScan(code); return; }
+  if (takeMode === "offsite") { offScan(code); return; }
   if (!code || takeBusy) return;
   const found = await S.findItemOrSerial(code);
   const item = found && found.item;
@@ -1510,9 +1589,10 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "offplace" ? off.place : searchTarget === "offserial" ? serialTyped : searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
-  if (searchTarget === "serial" || searchTarget === "dmgserial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
+  if (searchTarget === "offplace") { off.place = v.slice(0, 60); drawTake(); return; }
+  if (searchTarget === "serial" || searchTarget === "dmgserial" || searchTarget === "offserial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
   if (searchTarget === "dmgnote") { dmg.note = v.slice(0, 200); drawTake(); return; }
   if (searchTarget === "location") { locTyped = v.slice(0, 60); return; }
   if (searchTarget === "spot") { spot.count = Math.min(99999, parseInt(v.replace(/\D/g, ""), 10) || 0); drawTake(); return; }
@@ -1530,6 +1610,7 @@ onKey($("#typerKbd"), (b) => {
   if (k === "DONE") {
     $("#typer").classList.remove("on");
     if (searchTarget === "serial" && serialTyped.trim()) bookScan(serialTyped);
+    if (searchTarget === "offserial" && serialTyped.trim()) offScan(serialTyped.trim());
     if (searchTarget === "dmgserial") { if (serialTyped.trim()) dmgScan(serialTyped.trim()); else if (dmg.item && !dmg.unit) { dmg.serialText = ""; drawTake(); } }
     if (searchTarget === "location" && locTyped.trim() && locDone) locDone(locTyped.trim());
     return;
@@ -1590,7 +1671,7 @@ const prodSession = [];
 const canBuild = (t) => {
   const r = (t.recipe || []).filter((x) => x && x.item_id && Number(x.quantity_per_unit) > 0);
   if (!r.length || r.some((x) => { const it = S.items.find((i) => i.id === x.item_id); return !it || it.tracking_type === "serial"; })) return 0;
-  return Math.max(0, Math.min(...r.map((x) => { const it = S.items.find((i) => i.id === x.item_id); return Math.floor((Number(it && it.quantity_on_hand) || 0) / x.quantity_per_unit); })));
+  return Math.max(0, Math.min(...r.map((x) => { const it = S.items.find((i) => i.id === x.item_id); return Math.floor(onSite(it) / x.quantity_per_unit); })));
 };
 async function openProd() {
   $("#hdrTitle").textContent = "Production"; show("prod"); poke();
@@ -1631,7 +1712,7 @@ function drawBuild() {
   $("#bsPic").innerHTML = tilePic(t);
   $("#bsMeta").textContent = recipe.length ? `${recipe.length} part${recipe.length === 1 ? "" : "s"} \u00b7 ${canBuild(t)} ready with the stock there is now` : "";
   $("#bsParts").innerHTML = recipe.map((x) => {
-    const it = S.items.find((i) => i.id === x.item_id), have = Number(it && it.quantity_on_hand) || 0, need = x.quantity_per_unit * bsQty;
+    const it = S.items.find((i) => i.id === x.item_id), have = onSite(it), need = x.quantity_per_unit * bsQty;
     const bad = !it || have < need || (it && it.tracking_type === "serial");
     if (bad) short = true; if (it && it.tracking_type === "serial") serial = true;
     return `<tr class="${bad ? "short" : ""}"><td>${esc(it ? it.name : "Part no longer in the stock app")}</td><td class="n">${x.quantity_per_unit}</td><td class="n">${need}</td><td class="n">${it ? have : "-"}</td></tr>`;
