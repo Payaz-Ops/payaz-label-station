@@ -1,7 +1,7 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
 import { loadLog, addLogEntry, deleteLogEntry, logRow, exportCsv } from "./log.js";
-import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite, OFF_SITE_REASONS } from "./stock.js";
+import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite, OFF_SITE_REASONS, DUE_REASONS, dueText, isOverdue, bringBackItems } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
 const friendlyError = (window.__STOCK_MOCK__ && window.__STOCK_MOCK__.friendlyError) || realFriendly;
@@ -76,13 +76,39 @@ function show(id) {
   $("#pill").style.display = id === "home" ? "" : "none";
   $("#whoBtn").style.display = S.person && !locked && id !== "addme" ? "" : "none";
   if (S.person) $("#whoName").textContent = S.person.name.split(" ")[0];
+  if (id === "home") drawAlerts(); else $("#alertBtn").style.display = "none";
 }
 function home() {
   Object.keys(vals).forEach((k) => (vals[k] = ""));
   copies = 1;
   $("#hdrTitle").textContent = "Label Station";
   show("home");
+  refreshAlerts();
 }
+/* ---------- alerts on the home screen: stock to bring back on site, and overdue units ---------- */
+let alerts = { bring: [], overdue: [] }, alertsBusy = false;
+async function refreshAlerts() {
+  if (!S.person || alertsBusy) return drawAlerts();
+  alertsBusy = true;
+  try {
+    if (!S.items.length) await S.refresh();
+    const units = await S.offSiteUnits().catch(() => []);
+    alerts = { bring: bringBackItems(S.items), overdue: units.filter((u) => isOverdue(u)) };
+  } catch (e) {} finally { alertsBusy = false; drawAlerts(); }
+}
+function drawAlerts() {
+  const b = $("#alertBtn"), n = alerts.bring.length, o = alerts.overdue.length;
+  b.style.display = S.person && $("#home").classList.contains("on") && (n || o) ? "" : "none";
+  b.textContent = [n ? `\u26a0 Bring back ${n}` : "", o ? `${o} overdue` : ""].filter(Boolean).join(" \u00b7 ");
+}
+$("#alertBtn").onclick = () => {
+  const lines = [
+    ...(alerts.bring.length ? ["BRING BACK ON SITE (low on site):", ...alerts.bring.map((i) => `${i.name}: ${onSite(i)} on site (reorder at ${i.reorder_threshold ?? 0}), ${offSite(i)} off site`), ""] : []),
+    ...(alerts.overdue.length ? ["OVERDUE BACK ON SITE:", ...alerts.overdue.map((u) => `${u.serial_number} ${u.item_name}: ${OFF_SITE_REASONS[u.off_site_reason] || "off site"}, ${u.off_site_taken_by || "?"}, due ${dueText(u.off_site_due)}`)] : []),
+  ];
+  overlay("Stock off site needs attention", lines.join("\n"), false, false,
+    S.isManager ? { label: "Open Off site", run: () => { pickForTake = false; takeItem = null; takeMode = "offsite"; off = { ...offFresh(), dir: "on" }; openStock("take"); } } : null);
+};
 // Order labels: one box filled -> that label on its own; two or three -> one combined label.
 function printKind() {
   if (mode === "stock") return "stock";
@@ -1207,9 +1233,11 @@ function bookScan(code) {
 /* ---------- off site (managers): units kept off site to keep them safe ---------- */
 // Scan a tablet or card reader serial and it moves at once; scan a product counted by
 // quantity and choose how many. Same records as Payaz Stock's Off site page.
-const offFresh = () => ({ dir: "off", reason: "", takenBy: null, place: "", item: null, qty: 1, msg: null, busy: false, units: null });
+const offFresh = () => ({ dir: "off", reason: "", takenBy: null, place: "", due: "", item: null, qty: 1, msg: null, busy: false, units: null });
 let off = offFresh();
-const offDetails = () => ({ reason: off.reason, takenBy: off.takenBy || "", place: off.place });
+const offDetails = () => ({ reason: off.reason, takenBy: off.takenBy || "", place: off.place, due: DUE_REASONS.includes(off.reason) ? off.due : "" });
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const inDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return isoDay(d); };
 const offReady = () => off.dir === "on" || (!!off.reason && !!(off.takenBy || "").trim());
 const offDate = (iso) => (iso ? new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 function offLoadUnits() {
@@ -1232,7 +1260,7 @@ async function offScan(code) {
     const r = await S.moveSerialOffSite(code, off.dir, offDetails());
     const sn = esc(S.normaliseSerial(code));
     if (r.kind === "moved") {
-      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site (${esc(OFF_SITE_REASONS[off.reason])}) by ${esc(off.takenBy)}${off.place ? `. Note: ${esc(off.place)}` : ""}` : "back on site"}` };
+      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site (${esc(OFF_SITE_REASONS[off.reason])}) by ${esc(off.takenBy)}${offDetails().due ? `, due back ${esc(dueText(offDetails().due))}` : ""}${off.place ? `. Note: ${esc(off.place)}` : ""}` : "back on site"}` };
       takeSession.unshift({ name: r.unit.item_name, what: `${S.normaliseSerial(code)} ${off.dir === "off" ? `off site: ${OFF_SITE_REASONS[off.reason]}, ${off.takenBy}` : "back on site"}`, time: hhmm(), bad: false, undo: null });
       offLoadUnits();
     } else if (r.kind === "already") off.msg = { tone: "bad", text: `<b>${sn}</b> is already ${off.dir === "off" ? "off site" : "on site"}.` };
@@ -1268,7 +1296,8 @@ function drawOffSite(card) {
     ${off.dir === "off" ? `<div class="lbl dmglbl" style="margin:2px 0 -4px">Why is it going off site?</div>
       <div class="offwhy" id="offWhy">${Object.entries(OFF_SITE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${off.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>
       <div class="offrow"><button class="field" id="offTaken"><div class="lbl">Taken off site by</div><div class="val${off.takenBy ? "" : " empty"}">${off.takenBy ? esc(off.takenBy) : "Tap to type who"}</div></button>
-      <button class="field" id="offPlace"><div class="lbl">Notes (optional)</div><div class="val${off.place ? "" : " empty"}">${off.place ? esc(off.place) : "e.g. safe store, back Friday"}</div></button></div>` : ""}
+      <button class="field" id="offPlace"><div class="lbl">Notes (optional)</div><div class="val${off.place ? "" : " empty"}">${off.place ? esc(off.place) : "e.g. safe store, back Friday"}</div></button></div>
+      ${DUE_REASONS.includes(off.reason) ? `<div class="offdue" id="offDue"><span>Due back:</span>${[["", "No date"], [inDays(7), "1 week"], [inDays(14), "2 weeks"], [inDays(30), "1 month"]].map(([v, t]) => `<button data-due="${v}" class="${off.due === v ? "on" : ""}">${t}</button>`).join("")}<input type="date" id="offDueDate" min="${isoDay(new Date())}" value="${esc(off.due)}" aria-label="Due back date">${off.due ? `<b>${esc(dueText(off.due))}</b>` : ""}</div>` : ""}` : ""}
     ${it ? `<h2 style="margin:4px 0 0">${esc(it.name || "(no name)")}</h2>
       <div class="meta">On site <b>${onSite(it)}</b> \u00b7 off site <b>${offSite(it)}</b> \u00b7 total ${onSite(it) + offSite(it)}</div>
       <div class="counter" style="margin:0"><button id="offMinus">&minus;</button><button class="num"><small>${off.dir === "off" ? "TAKING OFF SITE" : "BRINGING BACK"}</small><b>${off.qty}</b></button><button id="offPlus">+</button></div>
@@ -1278,10 +1307,12 @@ function drawOffSite(card) {
       <div style="display:flex;gap:10px;margin-top:8px"><button class="ghost cam" id="offCam">&#128247; Use camera</button><button class="ghost" id="offType">&#9000; Type a serial</button></div></div>`}
     ${!ready ? `<div class="bookmsg bad">Choose why it's going off site, and who is taking it, before scanning.</div>` : off.msg ? `<div class="bookmsg ${off.msg.tone}">${off.msg.text}</div>` : ""}
     <div class="offlist"><div class="offlisthead">OFF SITE NOW</div>
-      ${off.units.length || offItems.length ? `<table>${off.units.map((u) => `<tr><td><b>${esc(u.serial_number)}</b><br><small>${esc(u.item_name || "")}</small></td><td>${esc(OFF_SITE_REASONS[u.off_site_reason] || "Off site")}${u.off_site_place ? `<br><small>${esc(u.off_site_place)}</small>` : ""}</td><td>${esc(u.off_site_taken_by || u.off_site_by_name || "")}</td><td>${esc(offDate(u.off_site_at))}</td></tr>`).join("")}
+      ${off.units.length || offItems.length ? `<table>${off.units.map((u) => `<tr><td><b>${esc(u.serial_number)}</b><br><small>${esc(u.item_name || "")}</small></td><td>${esc(OFF_SITE_REASONS[u.off_site_reason] || "Off site")}${u.off_site_place ? `<br><small>${esc(u.off_site_place)}</small>` : ""}</td><td>${esc(u.off_site_taken_by || u.off_site_by_name || "")}</td><td>${esc(offDate(u.off_site_at))}${u.off_site_due ? `<br><small class="${isOverdue(u) ? "overdue" : ""}">${isOverdue(u) ? "OVERDUE \u00b7 " : ""}due ${esc(dueText(u.off_site_due))}</small>` : ""}</td></tr>`).join("")}
         ${offItems.map((i) => `<tr><td><b>${esc(i.name)}</b><br><small>by quantity</small></td><td colspan="3"><b>${offSite(i)}</b> off site</td></tr>`).join("")}</table>` : `<div style="padding:6px 0">Nothing is off site.</div>`}</div>`;
   card.querySelectorAll("#offDir button").forEach((b) => (b.onclick = () => { off.dir = b.dataset.v; off.msg = null; drawTake(); poke(); }));
   card.querySelectorAll("#offWhy button").forEach((b) => (b.onclick = () => { off.reason = b.dataset.v; off.msg = null; drawTake(); poke(); }));
+  card.querySelectorAll("#offDue [data-due]").forEach((b) => (b.onclick = () => { off.due = b.dataset.due; drawTake(); poke(); }));
+  if ($("#offDueDate")) $("#offDueDate").onchange = (e) => { off.due = e.target.value || ""; drawTake(); poke(); };
   if ($("#offTaken")) $("#offTaken").onclick = () => { searchTarget = "offtaken"; drawTyper(); $("#typer").classList.add("on"); };
   if ($("#offPlace")) $("#offPlace").onclick = () => { searchTarget = "offplace"; drawTyper(); $("#typer").classList.add("on"); };
   if ($("#offCam")) $("#offCam").onclick = () => scanWithCamera((c) => offScan(c.trim()));

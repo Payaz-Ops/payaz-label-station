@@ -99,14 +99,23 @@ export const DAMAGE_REASONS = {
 export const OFF_SITE_REASONS = { storage: "Off Site Storage", testing: "Testing", loan: "Equipment Loan", other: "Other" };
 function offDetails(direction, d = {}) {
   const reason = String(d.reason || ""), takenBy = String(d.takenBy || "").trim().slice(0, 60), place = String(d.place || "").trim().slice(0, 60);
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(String(d.due || "")) ? String(d.due) : "";
   if (direction === "off") {
     if (!OFF_SITE_REASONS[reason]) throw new Error("Choose why it's going off site.");
     if (!takenBy) throw new Error("Enter who is taking it off site.");
   }
-  return { reason, takenBy, place };
+  return { reason, takenBy, place, due };
 }
-const offText = (d) => ` (${OFF_SITE_REASONS[d.reason]}) by ${d.takenBy}${d.place ? `. Note: ${d.place}` : ""}`;
+/** Reasons that usually come back by a date */
+export const DUE_REASONS = ["loan", "testing"];
+export const dueText = (due) => (due ? new Date(`${due}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "");
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+export const isOverdue = (u) => u.status === "off_site" && !!u.off_site_due && u.off_site_due < todayStr();
+const offText = (d) => ` (${OFF_SITE_REASONS[d.reason]}) by ${d.takenBy}${d.due ? `, due back ${dueText(d.due)}` : ""}${d.place ? `. Note: ${d.place}` : ""}`;
 export const offSite = (item) => Math.max(0, Number(item && item.qty_off_site) || 0);
+/** Products to bring back: some are off site and what's on site is at or below the reorder level. */
+export const bringBackItems = (items) => items.filter((i) => !i.is_discontinued && offSite(i) > 0 && onSite(i) <= (Number(i.reorder_threshold) || 0))
+  .sort((a, b) => onSite(a) - onSite(b) || (a.name || "").localeCompare(b.name || ""));
 export const onSite = (item) => Math.max(0, (Number(item && item.quantity_on_hand) || 0) - offSite(item));
 const rid = (prefix) => prefix + "_" + Math.random().toString(36).substring(2, 11);
 
@@ -703,7 +712,7 @@ export const stock = {
       const item = is.exists() ? { id: is.id, ...is.data() } : null;
       const now = new Date().toISOString();
       const changes = direction === "off"
-        ? { status: "off_site", off_site_at: now, off_site_by_id: who.id, off_site_by_name: who.name, off_site_place: place, off_site_reason: d.reason, off_site_taken_by: d.takenBy, updated_at: now }
+        ? { status: "off_site", off_site_at: now, off_site_by_id: who.id, off_site_by_name: who.name, off_site_place: place, off_site_reason: d.reason, off_site_taken_by: d.takenBy, off_site_due: d.due, updated_at: now }
         : { status: "in_stock", on_site_at: now, on_site_by_id: who.id, on_site_by_name: who.name, updated_at: now };
       tx.update(unitRef, changes);
       if (item) {
@@ -723,7 +732,7 @@ export const stock = {
       }
       const eid = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const ev = { id: eid, serial_key: key, serial_number: serial, type: direction === "off" ? "off_site" : "on_site", item_id: unit.item_id, item_name: unit.item_name, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now };
-      if (direction === "off") ev.note = `${OFF_SITE_REASONS[d.reason]}, taken by ${d.takenBy}${place ? `. Note: ${place}` : ""}`;
+      if (direction === "off") ev.note = `${OFF_SITE_REASONS[d.reason]}, taken by ${d.takenBy}${d.due ? `, due back ${dueText(d.due)}` : ""}${place ? `. Note: ${place}` : ""}`;
       tx.set(doc(db, "serial_events", eid), ev);
       out = { kind: "moved", unit: { ...unit, ...changes } };
     });
