@@ -1770,6 +1770,8 @@ function showWho() {
   closeSheet(); closeCamera();
   $("#hdrTitle").textContent = "Label Station";
   show("who"); drawWho();
+  // Names added on other tablets (shared sign-in)
+  S.refreshPeople().then(() => { if ($("#who").classList.contains("on")) drawWho(); });
 }
 function drawWho() {
   const people = S.people();
@@ -1780,7 +1782,9 @@ function drawWho() {
     openPin("unlock", { id: p.id, name: p.name, email: p.email });
   }));
   $("#whoAdd").onclick = () => openAddMe();
+  $("#whoConnectBox").style.display = S.connected ? "none" : "flex";
 }
+$("#whoConnect").onclick = () => openAddMe("", "", "connect");
 /** Lock the tablet: save any count in progress, then "Who's using the tablet?". */
 async function lockNow(idle = false) {
   if (!S.person) return;
@@ -1853,17 +1857,32 @@ $("#ppCancel").onclick = async () => {
   $("#pinPad").classList.remove("on");
   if (pin.mode !== "unlock") { await S.cancelPerson(); showWho(); }
 };
-function openAddMe(email = "", note = "") {
-  $("#amTitle").textContent = email ? "Sign in with your password" : "Add yourself to this tablet";
-  $("#amSub").textContent = note || "Sign in once with your Payaz Stock email and password. Then you choose a 4-digit PIN to use from now on.";
+let addMode = "person"; // "person": add yourself / new PIN; "connect": a manager connects this tablet
+function openAddMe(email = "", note = "", mode = "person") {
+  addMode = mode;
+  $("#amTitle").textContent = mode === "connect" ? "Connect this tablet" : email ? "Sign in with your password" : "Add yourself to this tablet";
+  $("#amSub").textContent = mode === "connect"
+    ? "A manager (an admin, or someone ticked for the damage box) signs in once with their Payaz Stock email and password. After that, everyone with a PIN can use it on this tablet too."
+    : note || "Sign in once with your Payaz Stock email and password. Then you choose a 4-digit PIN to use from now on, on every connected tablet.";
+  $("#amNext").textContent = mode === "connect" ? "Connect this tablet" : "Next: choose your PIN";
   $("#amEmail").value = email; $("#amEmail").readOnly = !!email; $("#amPass").value = "";
-  $("#hdrTitle").textContent = email ? "New PIN" : "Add me";
+  $("#hdrTitle").textContent = mode === "connect" ? "Connect tablet" : email ? "New PIN" : "Add me";
   show("addme");
   setTimeout(() => (email ? $("#amPass") : $("#amEmail")).focus(), 50);
 }
 $("#amNext").onclick = async () => {
   const email = $("#amEmail").value.trim(), pass = $("#amPass").value;
   if (!email || !pass) { overlay("Enter your email and password", "", true); return; }
+  if (addMode === "connect") {
+    overlay("Connecting this tablet…", "", false, true);
+    try {
+      await S.connectTablet(email, pass, "Label Station tablet");
+      $("#amPass").value = ""; addMode = "person";
+      showWho();
+      overlay("Tablet connected \u2713", "Everyone with a PIN now shows here. People added on this tablet before are shared the next time they enter their PIN.", false, false);
+    } catch (e) { overlay("Couldn't connect the tablet", friendlyError(e), true); }
+    return;
+  }
   overlay("Checking…", "", false, true);
   try {
     const p = await S.checkPerson(email, pass);
@@ -1880,6 +1899,9 @@ $("#amForgot").onclick = async () => {
 };
 // Settings: how soon it locks, and who's on this tablet
 function drawPeopleSettings() {
+  $("#shareHint").textContent = S.connected
+    ? "Shared sign-in is on: everyone's PIN works on every connected tablet, and removing someone takes them off every tablet."
+    : "Shared sign-in isn't set up on this tablet: a manager can connect it from \"Who's using the tablet?\".";
   $("#lockChips").innerHTML = [2, 5, 10, 15].map((m) => `<button class="chip ${settings.lockMins === m ? "on" : ""}" data-lock="${m}">Lock after ${m} min</button>`).join("");
   $("#lockChips").querySelectorAll("[data-lock]").forEach((b) => (b.onclick = () => { saveSettings({ lockMins: +b.dataset.lock }); drawPeopleSettings(); poke(); }));
   const people = S.people();
@@ -1887,7 +1909,11 @@ function drawPeopleSettings() {
   $("#peopleList").querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => {
     const p = people.find((x) => x.id === b.dataset.rm);
     overlay(`Take ${p.name} off this tablet?`, "They can add themselves again with their email and password.", false, false,
-      { label: "Remove", run: async () => { const me = S.person && S.person.id === p.id; await S.removePerson(p.id); if (me) showWho(); else drawPeopleSettings(); } });
+      { label: "Remove", run: async () => {
+        const me = S.person && S.person.id === p.id;
+        try { await S.removePerson(p.id); } catch (e) { overlay("Couldn't remove them", friendlyError(e), true); return; }
+        if (me) showWho(); else drawPeopleSettings();
+      } });
   }));
 }
 S.forgetOldSignIn();

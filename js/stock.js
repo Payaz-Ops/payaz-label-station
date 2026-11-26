@@ -4,7 +4,7 @@
 // (staff_accounts/{uid}), exactly as in the stock app.
 import {
   initializeApp, initializeAuth, indexedDBLocalPersistence, browserLocalPersistence,
-  signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
+  signInWithEmailAndPassword, signInWithCustomToken, signOut, onAuthStateChanged, sendPasswordResetEmail,
   initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
   query, where, getCountFromServer, serverTimestamp, orderBy, limit,
 } from "./firebase.js";
@@ -59,6 +59,32 @@ async function newPin(pin) {
 }
 const err = (code, message) => Object.assign(new Error(message), { code });
 
+/* Shared sign-in across tablets: the Payaz Stock server keeps everyone's PIN (as a
+   hash) and, for a tablet a manager has connected, checks a PIN and returns a
+   sign-in token. People added on another tablet appear here; this tablet also keeps
+   its own copy of each PIN it has seen, so a person can still unlock without
+   internet if they've used this tablet before. */
+const SERVER = "https://payaz-stock.web.app";
+const DEVICE_KEY = "payaz-device", SHARED_KEY = "payaz-people-shared";
+const loadJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
+const loadDevice = () => loadJson(DEVICE_KEY, null);
+const saveDevice = (d) => { if (d) localStorage.setItem(DEVICE_KEY, JSON.stringify(d)); else localStorage.removeItem(DEVICE_KEY); };
+const loadShared = () => loadJson(SHARED_KEY, []);
+async function server(path, body, idToken) {
+  let r;
+  try {
+    r = await fetch(`${SERVER}/api/tablet/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}) },
+      body: JSON.stringify(body || {}),
+    });
+  } catch (e) { throw err("offline", "Can't reach Payaz Stock. Check the internet connection."); }
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw err(j.code || `http-${r.status}`, j.error || `Payaz Stock didn't answer properly (${r.status}).`);
+  return j;
+}
+
 // Damage reasons, as in Payaz Stock's Report Damage form
 export const DAMAGE_REASONS = {
   damaged_production: "Damaged in production",
@@ -99,8 +125,43 @@ export const stock = {
 
   /** Everyone set up on this tablet: [{ id, name, email }], in name order. */
   people() {
-    return loadPeople().map(({ id, name, email }) => ({ id, name, email }))
-      .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+    const all = new Map(loadShared().map((p) => [p.uid, { id: p.uid, name: p.name, email: p.email }]));
+    // A shared person no longer on Payaz Stock's list was taken off on another tablet
+    for (const p of loadPeople()) if (!all.has(p.id) && !(loadDevice() && p.synced)) all.set(p.id, { id: p.id, name: p.name, email: p.email });
+    return [...all.values()].sort((a, b) => (a.name || "").localeCompare(b.name || "", "en", { sensitivity: "base" }));
+  },
+
+  /** Is this tablet connected for shared sign-in (by a manager)? */
+  get connected() { return !!loadDevice(); },
+
+  /** Get the names of everyone with a PIN from Payaz Stock. */
+  async refreshPeople() {
+    const dev = loadDevice();
+    if (!dev) return false;
+    try {
+      const j = await server("people", { deviceId: dev.id, secret: dev.secret });
+      localStorage.setItem(SHARED_KEY, JSON.stringify(j.people || []));
+      // Taken off on another tablet (or their login was turned off): forget them here too
+      const ids = new Set((j.people || []).map((x) => x.uid));
+      for (const p of loadPeople()) if (p.synced && !ids.has(p.id)) await this.removePerson(p.id, true);
+      return true;
+    } catch (e) {
+      if (e.code === "not-connected") { saveDevice(null); localStorage.removeItem(SHARED_KEY); }
+      return false;
+    }
+  },
+
+  /** A manager connects this tablet for shared sign-in, with their email and password. */
+  async connectTablet(email, password, deviceName = "Label Station tablet") {
+    const inst = instance("payaz-connect");
+    const cred = await signInWithEmailAndPassword(inst.auth, String(email || "").trim(), password);
+    try {
+      const j = await server("register", { deviceName }, await cred.user.getIdToken());
+      saveDevice({ id: j.deviceId, secret: j.secret, name: deviceName });
+    } finally { try { await signOut(inst.auth); } catch (e) {} }
+    await this.refreshPeople();
+    // People already on this tablet: send their PIN up the next time they unlock
+    savePeople(loadPeople().map((p) => ({ ...p, synced: false })));
   },
 
   /** Step 1 of adding a person (or a forgotten PIN): sign in with their email and
@@ -126,9 +187,16 @@ export const stock = {
     if (!p) throw err("no-person", "Sign in with your email and password first.");
     if (!/^\d{4}$/.test(String(pin))) throw err("bad-pin", "The PIN must be 4 numbers.");
     const others = loadPeople().filter((x) => x.id !== p.id && x.email.toLowerCase() !== p.email.toLowerCase());
-    savePeople([...others, { id: p.id, name: p.name, email: p.email, appName: p.appName, pin: await newPin(pin), tries: 0 }]);
+    // Shared sign-in: the same PIN on every connected tablet
+    let synced = false;
+    const dev = loadDevice(), user = instance(p.appName).auth.currentUser;
+    if (dev && user) {
+      try { await server("set-pin", { deviceId: dev.id, secret: dev.secret, pin: String(pin) }, await user.getIdToken()); synced = true; } catch (e) {}
+    }
+    savePeople([...others, { id: p.id, name: p.name, email: p.email, appName: p.appName, pin: await newPin(pin), tries: 0, synced }]);
     this._pending = null;
-    return { id: p.id, name: p.name, email: p.email };
+    if (synced) await this.refreshPeople(); // so the list here includes them before they unlock
+    return { id: p.id, name: p.name, email: p.email, synced };
   },
   /** Gave up part way: a new person's sign-in is ended (a known person's is kept). */
   async cancelPerson() {
@@ -140,8 +208,31 @@ export const stock = {
    *  5 wrong tries (or if their saved sign-in has ended) they sign in again with
    *  their password (code "needs-password"). */
   async unlock(id, pin) {
-    const list = loadPeople(), p = list.find((x) => x.id === id);
-    if (!p) throw err("unknown", "That person isn't set up on this tablet any more.");
+    const list = loadPeople(), dev = loadDevice();
+    let p = list.find((x) => x.id === id);
+    const shared = loadShared().find((x) => x.uid === id);
+    // Shared sign-in: the Payaz Stock server checks the PIN
+    if (dev && shared) {
+      try {
+        const j = await server("pin-login", { deviceId: dev.id, secret: dev.secret, uid: id, pin: String(pin) });
+        if (!p) { p = { id, name: j.name || shared.name, email: shared.email, appName: "payaz-u-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6) }; list.push(p); }
+        p.pin = await newPin(pin); p.tries = 0; p.synced = true; // this tablet's own copy, for unlocking without internet
+        savePeople(list);
+        const inst = instance(p.appName);
+        await inst.auth.authStateReady();
+        let user = inst.auth.currentUser;
+        if (!user || user.uid !== id) user = (await signInWithCustomToken(inst.auth, j.token)).user;
+        return this._activate(p, user, list);
+      } catch (e) {
+        if (e.code === "not-staff") { this.removePerson(id, true); throw e; }
+        if (e.code === "needs-password" && p) { p.tries = MAX_TRIES; savePeople(list); }
+        if (["wrong-pin", "needs-password", "not-staff", "unknown"].includes(e.code)) throw e;
+        if (e.code === "not-connected") { saveDevice(null); localStorage.removeItem(SHARED_KEY); }
+        // No internet, or the server can't sign people in yet: use this tablet's own copy if it has one
+        if (!p || !p.pin) throw e.code === "offline" ? err("offline", "Can't reach Payaz Stock to check your PIN. Check the internet connection.") : e;
+      }
+    }
+    if (!p || (dev && p.synced && !shared)) throw err("unknown", "That person isn't set up on this tablet any more.");
     if ((p.tries || 0) >= MAX_TRIES) throw err("needs-password", "Too many wrong PINs. Sign in with your password to choose a new PIN.");
     if ((await pinHash(pin, p.pin.salt)) !== p.pin.hash) {
       p.tries = (p.tries || 0) + 1; savePeople(list);
@@ -153,6 +244,19 @@ export const stock = {
     await inst.auth.authStateReady();
     const user = inst.auth.currentUser;
     if (!user || user.uid !== p.id) throw err("needs-password", "Your sign-in has ended. Sign in with your password again.");
+    const person = await this._activate(p, user, list);
+    // Added on this tablet before it was connected: send the PIN up so it works on every tablet
+    if (dev && !p.synced) {
+      user.getIdToken().then((t) => server("set-pin", { deviceId: dev.id, secret: dev.secret, pin: String(pin) }, t))
+        .then(() => { const l = loadPeople(), x = l.find((y) => y.id === p.id); if (x) { x.synced = true; savePeople(l); } this.refreshPeople(); })
+        .catch(() => {});
+    }
+    return person;
+  },
+
+  /** Make a signed-in person the one using the tablet. */
+  async _activate(p, user, list) {
+    const inst = instance(p.appName);
     auth = inst.auth; db = inst.db;
     this.user = user; this.person = { id: p.id, name: p.name, email: p.email };
     try {
@@ -161,7 +265,7 @@ export const stock = {
       this.profile = { name: p.name }; // offline: carry on with the name saved on the tablet
     }
     if (this.profile && (this.profile.disabled === true || this.profile.removed === true)) {
-      this.lock(); this.removePerson(p.id);
+      this.lock(); this.removePerson(p.id, true);
       throw err("not-staff", "Your Payaz Stock login has been turned off, so you've been taken off this tablet. Ask an admin.");
     }
     if (this.profile && this.profile.name && this.profile.name !== p.name) { p.name = this.profile.name; savePeople(list); }
@@ -194,7 +298,13 @@ export const stock = {
   },
 
   /** Take a person off this tablet (they'd sign in with their password to come back). */
-  async removePerson(id) {
+  async removePerson(id, localOnly = false) {
+    // Shared sign-in: take them off every tablet (themselves, or anyone if a manager)
+    const dev = loadDevice();
+    if (dev && !localOnly && this.user) {
+      await server("remove-person", { deviceId: dev.id, secret: dev.secret, uid: id }, await this.user.getIdToken());
+      localStorage.setItem(SHARED_KEY, JSON.stringify(loadShared().filter((x) => x.uid !== id)));
+    }
     const list = loadPeople(), p = list.find((x) => x.id === id);
     if (!p) return;
     savePeople(list.filter((x) => x.id !== id));

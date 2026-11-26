@@ -2,7 +2,7 @@
 export { initializeApp } from "firebase/app";
 export {
   initializeAuth, indexedDBLocalPersistence, browserLocalPersistence,
-  signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail,
+  signInWithEmailAndPassword, signInWithCustomToken, signOut, onAuthStateChanged, sendPasswordResetEmail,
 } from "firebase/auth";
 export {
   initializeFirestore, collection, getDocs, doc, getDoc, writeBatch, runTransaction,
