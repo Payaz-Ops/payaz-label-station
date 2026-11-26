@@ -95,6 +95,17 @@ export const DAMAGE_REASONS = {
 };
 // Stock kept off site (managers move it): still counted in quantity_on_hand, but
 // counts of the shelves only expect what's on site.
+// Why stock goes off site (same as Payaz Stock's src/lib/offsite.ts)
+export const OFF_SITE_REASONS = { storage: "Off Site Storage", testing: "Testing", loan: "Equipment Loan", other: "Other" };
+function offDetails(direction, d = {}) {
+  const reason = String(d.reason || ""), takenBy = String(d.takenBy || "").trim().slice(0, 60), place = String(d.place || "").trim().slice(0, 60);
+  if (direction === "off") {
+    if (!OFF_SITE_REASONS[reason]) throw new Error("Choose why it's going off site.");
+    if (!takenBy) throw new Error("Enter who is taking it off site.");
+  }
+  return { reason, takenBy, place };
+}
+const offText = (d) => ` (${OFF_SITE_REASONS[d.reason]}) by ${d.takenBy}${d.place ? ` to ${d.place}` : ""}`;
 export const offSite = (item) => Math.max(0, Number(item && item.qty_off_site) || 0);
 export const onSite = (item) => Math.max(0, (Number(item && item.quantity_on_hand) || 0) - offSite(item));
 const rid = (prefix) => prefix + "_" + Math.random().toString(36).substring(2, 11);
@@ -624,12 +635,12 @@ export const stock = {
   /* ---------- Off site (same records as Payaz Stock's Off site page, src/lib/offsite.ts) ---------- */
 
   /** Move some of a product counted by quantity off site ("off") or bring some back ("on"). */
-  async moveQuantityOffSite(itemId, direction, quantity, place = "") {
+  async moveQuantityOffSite(itemId, direction, quantity, details = {}) {
     init();
     if (!this.user) throw new Error("Sign in to the stock app first.");
     const n = Math.round(quantity);
     if (!(n > 0)) throw new Error("Choose how many.");
-    place = String(place || "").trim().slice(0, 60);
+    const d = offDetails(direction, details), place = d.place;
     const who = { id: this.user.uid, name: this.userName };
     const ref = doc(db, "items", itemId);
     let out;
@@ -651,7 +662,7 @@ export const stock = {
         location_from: direction === "off" ? item.location || "" : `Off site${where}`,
         location_to: direction === "off" ? `Off site${where}` : item.location || "",
         user_id: who.id, user_name: who.name,
-        reason: `${direction === "off" ? "[Off site]" : "[Back on site]"} ${n} ${direction === "off" ? "taken off site" : "brought back on site"}${where}. On site ${on} \u2192 ${newOn}, off site ${off} \u2192 ${newOff}, total ${item.quantity_on_hand} unchanged`,
+        reason: `${direction === "off" ? "[Off site]" : "[Back on site]"} ${n} ${direction === "off" ? `taken off site${offText(d)}` : "brought back on site"}. On site ${on} \u2192 ${newOn}, off site ${off} \u2192 ${newOff}, total ${item.quantity_on_hand} unchanged`,
         source: "manual",
       });
       out = { item: { ...item, qty_off_site: newOff, updated_at: now }, onSite: newOn, offSite: newOff };
@@ -661,13 +672,20 @@ export const stock = {
     return out;
   },
 
+  /** Serial units off site now, newest first (for the Off site list). */
+  async offSiteUnits() {
+    init();
+    const snap = await getDocs(query(collection(db, "serial_units"), where("status", "==", "off_site")));
+    return snap.docs.map((d) => d.data()).sort((a, b) => (b.off_site_at || "").localeCompare(a.off_site_at || ""));
+  },
+
   /** Take one serial unit off site (from in stock) or bring it back (to in stock).
    *  Returns { kind: "moved" | "already" | "not_here" | "unknown", unit }. */
-  async moveSerialOffSite(rawSerial, direction, place = "") {
+  async moveSerialOffSite(rawSerial, direction, details = {}) {
     init();
     if (!this.user) throw new Error("Sign in to the stock app first.");
     const serial = this.normaliseSerial(rawSerial), key = this.serialKey(rawSerial);
-    place = String(place || "").trim().slice(0, 60);
+    const d = offDetails(direction, details), place = d.place;
     const who = { id: this.user.uid, name: this.userName };
     const unitRef = doc(db, "serial_units", key);
     let out, newItem = null;
@@ -685,7 +703,7 @@ export const stock = {
       const item = is.exists() ? { id: is.id, ...is.data() } : null;
       const now = new Date().toISOString();
       const changes = direction === "off"
-        ? { status: "off_site", off_site_at: now, off_site_by_id: who.id, off_site_by_name: who.name, off_site_place: place, updated_at: now }
+        ? { status: "off_site", off_site_at: now, off_site_by_id: who.id, off_site_by_name: who.name, off_site_place: place, off_site_reason: d.reason, off_site_taken_by: d.takenBy, updated_at: now }
         : { status: "in_stock", on_site_at: now, on_site_by_id: who.id, on_site_by_name: who.name, updated_at: now };
       tx.update(unitRef, changes);
       const fromPlace = direction === "off" ? place : unit.off_site_place || "";
@@ -699,14 +717,14 @@ export const stock = {
           location_from: direction === "off" ? item.location || "" : `Off site${fromPlace ? ` (${fromPlace})` : ""}`,
           location_to: direction === "off" ? `Off site${place ? ` (${place})` : ""}` : item.location || "",
           user_id: who.id, user_name: who.name,
-          reason: `${direction === "off" ? "[Off site]" : "[Back on site]"} ${serial} ${direction === "off" ? "taken off site" : "brought back on site"}${fromPlace ? ` (${fromPlace})` : ""}. Off site ${off} \u2192 ${newOff}, total ${item.quantity_on_hand} unchanged`,
+          reason: `${direction === "off" ? "[Off site]" : "[Back on site]"} ${serial} ${direction === "off" ? `taken off site${offText(d)}` : `brought back on site (was ${OFF_SITE_REASONS[unit.off_site_reason] || "off site"}${unit.off_site_taken_by ? `, taken by ${unit.off_site_taken_by}` : ""})`}. Off site ${off} \u2192 ${newOff}, total ${item.quantity_on_hand} unchanged`,
           source: "scan",
         });
         newItem = { ...item, qty_off_site: newOff, updated_at: now };
       }
       const eid = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const ev = { id: eid, serial_key: key, serial_number: serial, type: direction === "off" ? "off_site" : "on_site", item_id: unit.item_id, item_name: unit.item_name, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now };
-      if (place) ev.note = place;
+      if (direction === "off") ev.note = `${OFF_SITE_REASONS[d.reason]}, taken by ${d.takenBy}${place ? `, to ${place}` : ""}`;
       tx.set(doc(db, "serial_events", eid), ev);
       out = { kind: "moved", unit: { ...unit, ...changes } };
     });

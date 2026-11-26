@@ -1,7 +1,7 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
 import { loadLog, addLogEntry, deleteLogEntry, logRow, exportCsv } from "./log.js";
-import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite } from "./stock.js";
+import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite, OFF_SITE_REASONS } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
 const friendlyError = (window.__STOCK_MOCK__ && window.__STOCK_MOCK__.friendlyError) || realFriendly;
@@ -1207,7 +1207,14 @@ function bookScan(code) {
 /* ---------- off site (managers): units kept off site to keep them safe ---------- */
 // Scan a tablet or card reader serial and it moves at once; scan a product counted by
 // quantity and choose how many. Same records as Payaz Stock's Off site page.
-let off = { dir: "off", place: "", item: null, qty: 1, msg: null, busy: false };
+const offFresh = () => ({ dir: "off", reason: "", takenBy: null, place: "", item: null, qty: 1, msg: null, busy: false, units: null });
+let off = offFresh();
+const offDetails = () => ({ reason: off.reason, takenBy: off.takenBy || "", place: off.place });
+const offReady = () => off.dir === "on" || (!!off.reason && !!(off.takenBy || "").trim());
+const offDate = (iso) => (iso ? new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+function offLoadUnits() {
+  S.offSiteUnits().then((u) => { off.units = u; if (takeMode === "offsite" && $("#takeMain").style.display !== "none") drawTake(); }).catch(() => {});
+}
 function offStart(item) {
   if (item.tracking_type === "serial") { off.msg = { tone: "", text: `${esc(item.name)} is tracked by serial number: scan the serial number on each unit.` }; drawTake(); return; }
   if (off.item && off.item.id === item.id) off.qty++;
@@ -1219,13 +1226,15 @@ async function offScan(code) {
   if (!code || off.busy) return;
   const product = S.findByCode(code);
   if (product) { offStart(product); return; }
+  if (!offReady()) { off.msg = { tone: "bad", text: "Choose why it's going off site, and who is taking it, first. Then scan again." }; drawTake(); return; }
   off.busy = true; off.msg = { tone: "", text: `Saving <b>${esc(S.normaliseSerial(code))}</b>…` }; drawTake();
   try {
-    const r = await S.moveSerialOffSite(code, off.dir, off.place);
+    const r = await S.moveSerialOffSite(code, off.dir, offDetails());
     const sn = esc(S.normaliseSerial(code));
     if (r.kind === "moved") {
-      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site${off.place ? ` to ${esc(off.place)}` : ""}` : "back on site"}` };
-      takeSession.unshift({ name: r.unit.item_name, what: `${S.normaliseSerial(code)} ${off.dir === "off" ? "off site" : "back on site"}`, time: hhmm(), bad: false, undo: null });
+      off.msg = { tone: "good", text: `\u2713 <b>${sn}</b> (${esc(r.unit.item_name)}) ${off.dir === "off" ? `taken off site (${esc(OFF_SITE_REASONS[off.reason])}) by ${esc(off.takenBy)}${off.place ? ` to ${esc(off.place)}` : ""}` : "back on site"}` };
+      takeSession.unshift({ name: r.unit.item_name, what: `${S.normaliseSerial(code)} ${off.dir === "off" ? `off site: ${OFF_SITE_REASONS[off.reason]}, ${off.takenBy}` : "back on site"}`, time: hhmm(), bad: false, undo: null });
+      offLoadUnits();
     } else if (r.kind === "already") off.msg = { tone: "bad", text: `<b>${sn}</b> is already ${off.dir === "off" ? "off site" : "on site"}.` };
     else if (r.kind === "not_here") off.msg = { tone: "bad", text: `<b>${sn}</b> (${esc(r.unit.item_name)}) is recorded as ${esc(serialStatusText(r.unit))}, so it can't be moved ${off.dir} site.` };
     else off.msg = { tone: "bad", text: `<b>${sn}</b> isn't booked in, and no product has that barcode.` };
@@ -1239,32 +1248,41 @@ async function offSave() {
   const item = off.item, n = off.qty, dir = off.dir;
   overlay("Saving…", item.name, false, true);
   try {
-    const r = await S.moveQuantityOffSite(item.id, dir, n, off.place);
+    const r = await S.moveQuantityOffSite(item.id, dir, n, offDetails());
     hideOverlay();
     off.item = null;
     off.msg = { tone: "good", text: `\u2713 ${n} \u00d7 <b>${esc(item.name)}</b> ${dir === "off" ? "taken off site" : "brought back on site"}. On site now ${r.onSite}, off site ${r.offSite}.` };
-    takeSession.unshift({ name: item.name, what: `${n} ${dir === "off" ? "off site" : "back on site"}`, time: hhmm(), bad: false, undo: null });
+    takeSession.unshift({ name: item.name, what: `${n} ${dir === "off" ? `off site: ${OFF_SITE_REASONS[off.reason]}, ${off.takenBy}` : "back on site"}`, time: hhmm(), bad: false, undo: null });
   } catch (e) { overlay("Couldn't save", friendlyError(e), true); }
   finally { off.busy = false; drawTake(); }
 }
 function drawOffSite(card) {
-  const offItems = S.items.filter((i) => offSite(i) > 0).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  if (off.takenBy === null) off.takenBy = S.userName || "";
+  if (off.units === null) { off.units = []; offLoadUnits(); }
+  const offItems = S.items.filter((i) => offSite(i) > 0 && i.tracking_type !== "serial").sort((a, b) => (a.name || "").localeCompare(b.name || ""));
   const it = off.item && (S.items.find((i) => i.id === off.item.id) || off.item);
   const max = it ? (off.dir === "off" ? onSite(it) : offSite(it)) : 0;
   if (it) off.qty = Math.max(1, Math.min(off.qty, Math.max(1, max)));
+  const ready = offReady();
   card.innerHTML = `<div class="seg" id="offDir"><button data-v="off" class="${off.dir === "off" ? "on" : ""}">Taking off site</button><button data-v="on" class="${off.dir === "on" ? "on" : ""}">Bringing back on site</button></div>
-    ${off.dir === "off" ? `<button class="field" id="offPlace" style="padding:8px 14px"><div class="lbl">Where to (optional)</div><div class="val${off.place ? "" : " empty"}" style="font-size:20px">${off.place ? esc(off.place) : "Tap to type it, e.g. Safe store"}</div></button>` : ""}
-    ${it ? `<h2>${esc(it.name || "(no name)")}</h2>
-      <div class="meta">On site <b>${onSite(it)}</b> \u00b7 off site <b>${offSite(it)}</b> \u00b7 total ${recorded(it) + offSite(it)}</div>
-      <div class="counter"><button id="offMinus">&minus;</button><button class="num"><small>${off.dir === "off" ? "TAKING OFF SITE" : "BRINGING BACK"}</small><b>${off.qty}</b></button><button id="offPlus">+</button></div>
+    ${off.dir === "off" ? `<div class="lbl dmglbl" style="margin:2px 0 -4px">Why is it going off site?</div>
+      <div class="offwhy" id="offWhy">${Object.entries(OFF_SITE_REASONS).map(([k, t]) => `<button data-v="${k}" class="${off.reason === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>
+      <div class="offrow"><button class="field" id="offTaken"><div class="lbl">Taken off site by</div><div class="val${off.takenBy ? "" : " empty"}">${off.takenBy ? esc(off.takenBy) : "Tap to type who"}</div></button>
+      <button class="field" id="offPlace"><div class="lbl">Where to (optional)</div><div class="val${off.place ? "" : " empty"}">${off.place ? esc(off.place) : "e.g. Safe store"}</div></button></div>` : ""}
+    ${it ? `<h2 style="margin:4px 0 0">${esc(it.name || "(no name)")}</h2>
+      <div class="meta">On site <b>${onSite(it)}</b> \u00b7 off site <b>${offSite(it)}</b> \u00b7 total ${onSite(it) + offSite(it)}</div>
+      <div class="counter" style="margin:0"><button id="offMinus">&minus;</button><button class="num"><small>${off.dir === "off" ? "TAKING OFF SITE" : "BRINGING BACK"}</small><b>${off.qty}</b></button><button id="offPlus">+</button></div>
       ${max ? "" : `<div class="bookmsg bad">None ${off.dir === "off" ? "on site" : "off site"} to move.</div>`}
-      <div class="takebtns"><button class="ghost" id="offCancel" style="min-height:70px">Cancel</button><button class="print" id="offSave" ${max && !off.busy ? "" : "disabled"}>SAVE</button></div>`
-    : `<div class="scanwait" style="flex:1"><div class="beam"></div><h2>Scan a serial number or a product</h2>
-      <p style="margin:0;color:var(--muted);font-size:17px">Tablets and card readers: scan the serial on each unit, it moves straight away. Other stock: scan its barcode or tap Find an item, then choose how many.</p>
-      <div class="btns" style="display:flex;gap:10px"><button class="ghost cam" id="offCam">&#128247; Use camera</button><button class="ghost" id="offType">&#9000; Type a serial</button></div></div>`}
-    ${off.msg ? `<div class="bookmsg ${off.msg.tone}">${off.msg.text}</div>` : ""}
-    <div class="offlist"><b>Off site now:</b> ${offItems.length ? offItems.map((i) => `${esc(i.name)} <b>${offSite(i)}</b>`).join(" \u00b7 ") : "nothing"}</div>`;
+      <div class="takebtns"><button class="ghost" id="offCancel" style="min-height:62px">Cancel</button><button class="print" id="offSave" ${max && ready && !off.busy ? "" : "disabled"}>SAVE</button></div>`
+    : `<div class="offscan"><b>Scan a serial number or a product.</b> Tablets and card readers move straight away; other stock: scan its barcode or tap Find an item, then choose how many.
+      <div style="display:flex;gap:10px;margin-top:8px"><button class="ghost cam" id="offCam">&#128247; Use camera</button><button class="ghost" id="offType">&#9000; Type a serial</button></div></div>`}
+    ${!ready ? `<div class="bookmsg bad">Choose why it's going off site, and who is taking it, before scanning.</div>` : off.msg ? `<div class="bookmsg ${off.msg.tone}">${off.msg.text}</div>` : ""}
+    <div class="offlist"><div class="offlisthead">OFF SITE NOW</div>
+      ${off.units.length || offItems.length ? `<table>${off.units.map((u) => `<tr><td><b>${esc(u.serial_number)}</b><br><small>${esc(u.item_name || "")}</small></td><td>${esc(OFF_SITE_REASONS[u.off_site_reason] || "Off site")}${u.off_site_place ? `<br><small>${esc(u.off_site_place)}</small>` : ""}</td><td>${esc(u.off_site_taken_by || u.off_site_by_name || "")}</td><td>${esc(offDate(u.off_site_at))}</td></tr>`).join("")}
+        ${offItems.map((i) => `<tr><td><b>${esc(i.name)}</b><br><small>by quantity</small></td><td colspan="3"><b>${offSite(i)}</b> off site</td></tr>`).join("")}</table>` : `<div style="padding:6px 0">Nothing is off site.</div>`}</div>`;
   card.querySelectorAll("#offDir button").forEach((b) => (b.onclick = () => { off.dir = b.dataset.v; off.msg = null; drawTake(); poke(); }));
+  card.querySelectorAll("#offWhy button").forEach((b) => (b.onclick = () => { off.reason = b.dataset.v; off.msg = null; drawTake(); poke(); }));
+  if ($("#offTaken")) $("#offTaken").onclick = () => { searchTarget = "offtaken"; drawTyper(); $("#typer").classList.add("on"); };
   if ($("#offPlace")) $("#offPlace").onclick = () => { searchTarget = "offplace"; drawTyper(); $("#typer").classList.add("on"); };
   if ($("#offCam")) $("#offCam").onclick = () => scanWithCamera((c) => offScan(c.trim()));
   if ($("#offType")) $("#offType").onclick = () => { searchTarget = "offserial"; serialTyped = ""; drawTyper(); $("#typer").classList.add("on"); };
@@ -1590,9 +1608,10 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "offplace" ? off.place : searchTarget === "offserial" ? serialTyped : searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "offtaken" ? off.takenBy || "" : searchTarget === "offplace" ? off.place : searchTarget === "offserial" ? serialTyped : searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
   if (searchTarget === "offplace") { off.place = v.slice(0, 60); drawTake(); return; }
+  if (searchTarget === "offtaken") { off.takenBy = v.slice(0, 60); drawTake(); return; }
   if (searchTarget === "serial" || searchTarget === "dmgserial" || searchTarget === "offserial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
   if (searchTarget === "dmgnote") { dmg.note = v.slice(0, 200); drawTake(); return; }
   if (searchTarget === "location") { locTyped = v.slice(0, 60); return; }
@@ -1792,6 +1811,7 @@ async function lockNow(idle = false) {
   if (takeItem && !(await takeSave(true))) { if (!idle) return; }
   takeItem = null; bookItem = null; pickForTake = false;
   if (takeMode === "damage") dmg = dmgFresh();
+  off = offFresh();
   Object.keys(vals).forEach((k) => (vals[k] = ""));
   hideOverlay();
   S.lock();

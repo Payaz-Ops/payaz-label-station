@@ -130,8 +130,18 @@ header .icon-btn { background: rgba(255,255,255,.2); color: #fff; height: 52px; 
 .buildrow .counter { margin: 0; }
 .buildrow .print { flex: 1; min-height: 84px; font-size: 28px; }
 .buildrow .ghost { min-height: 84px; }
-.offlist { font-size: 15px; color: var(--muted); line-height: 1.6; max-height: 120px; overflow-y: auto; }
-.offlist b { color: var(--navy); }
+.offwhy { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.offwhy button { background: #eef2f6; border: 3px solid transparent; border-radius: 12px; min-height: 52px; font-size: 16px; font-weight: 700; }
+.offwhy button.on { border-color: var(--teal); background: #e3f6f7; }
+.offrow { display: flex; gap: 10px; }
+.offrow .field { flex: 1; }
+.offscan { font-size: 16px; color: var(--muted); padding: 6px 2px; }
+.offscan b { color: var(--navy); }
+.offlist { flex: 1; min-height: 90px; overflow-y: auto; font-size: 14px; color: var(--ink); border-top: 1px solid var(--line); }
+.offlisthead { font-size: 13px; font-weight: 700; color: var(--muted); padding: 6px 0 2px; }
+.offlist table { width: 100%; border-collapse: collapse; }
+.offlist td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+.offlist small { color: var(--muted); }
 .dmghead h2 { margin: 0; }
 .dmghead .meta { margin-top: 2px; }
 .dmgrow { display: flex; gap: 16px; align-items: flex-start; }
