@@ -354,6 +354,76 @@ input, select, textarea { font: inherit; color: var(--ink); user-select: text; -
 #camera .frame { position: absolute; left: 15%; right: 15%; top: 32%; bottom: 32%; border: 4px solid #fff; border-radius: 16px; box-shadow: 0 0 0 9999px rgba(0,0,0,.45); }
 #camera .msg { position: absolute; top: 18px; left: 0; right: 0; text-align: center; color: #fff; font-size: 22px; font-weight: 700; }
 #camera button { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: #fff; font-weight: 700; font-size: 22px; padding: 16px 48px; }
+
+/* ==== Look: "Canary Wharf" (Nov 2026), matching the Payaz portal and Payaz Stock, with the
+   coloured home tiles kept (as flat solid blocks) so jobs are quick to find in the production room.
+   Same screens and words; printed labels are unchanged. ==== */
+@font-face { font-family: 'Inter'; src: url(fonts/Inter-latin.woff2) format('woff2'); font-weight: 100 900; }
+:root {
+  --teal: #0E6B78; --navy: #0F172A; --ink: #0F172A; --muted: #64748B; --line: #E2E8F0; --bg: #F6F7F9; --card: #fff;
+  --grad: #0E6B78; --r: 6px;
+}
+body { font-family: 'Inter', sans-serif; }
+/* Dark slate bar along the top (the tablet has no sidebar) */
+header { background: #0F172A; border-bottom: 1px solid #1E293B; }
+header .title { font-weight: 600; font-size: 22px; }
+header .icon-btn { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); border-radius: 4px; font-weight: 600; font-size: 18px; }
+.pill { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); border-radius: 4px; font-weight: 600; }
+.pill.bad { background: #991B1B; border-color: #991B1B; }
+.pill.ok::before { background: #2DD4BF; box-shadow: none; }
+.spotdue { border-radius: 4px; box-shadow: none; font-weight: 700; }
+/* Home: white tiles with a hairline, dark text, a thin coloured edge to tell them apart */
+.big { background: #fff !important; color: #0F172A; border: 1px solid #E2E8F0; box-shadow: inset 4px 0 0 0 #0E6B78; font-weight: 700; font-size: 30px; border-radius: 6px; }
+.big small { color: #64748B; opacity: 1; font-weight: 400; }
+.big.damage { box-shadow: inset 4px 0 0 0 #B91C1C; }
+.big.prod { box-shadow: inset 4px 0 0 0 #B45309; }
+.big .soon { background: #F1F5F9; color: #64748B; border-radius: 4px; }
+/* Buttons: one solid teal; secondary grey outlined */
+.print { background: #0E6B78 !important; font-weight: 700; letter-spacing: 0; border-radius: 6px; }
+.print.dmgsave { background: #B91C1C !important; }
+.ghost { background: #fff; border: 1px solid #CBD5E1; font-weight: 600; }
+.ghost.cam, .chip.primary, .keypad button.next { background: #0E6B78; border-color: #0E6B78; color: #fff; }
+.keypad button.pz { background: #0F172A; }
+.keypad button, .kbd button, .pinkeys button, .counter button, .sizebar button { background: #fff; border: 1px solid #E2E8F0; color: #0F172A; font-weight: 600; }
+.keypad button.del, .kbd button.del, .pinkeys button.del { background: #fff; color: #B91C1C; border-color: #FECACA; }
+/* Panels and fields: hairlines, no shadows */
+.card, .panel, .ptile, .whoname, .field, .search, .sizebar { border: 1px solid #E2E8F0; box-shadow: none; border-radius: 6px; }
+.field { border-width: 1px; }
+.field.active { border-color: #0E6B78; box-shadow: 0 0 0 2px rgba(14,107,120,.18); }
+.field .val { font-weight: 700; }
+.chip, .seg button, .offwhy button, .offdue button { background: #fff; border: 1px solid #E2E8F0; border-radius: 4px; font-weight: 600; }
+.chip.on, .seg button.on, .offwhy button.on, .offdue button.on { border: 2px solid #0E6B78; background: #F0F9FA; }
+.counter .num { background: #F8FAFC; border: 2px solid #0E6B78; border-radius: 6px; }
+.counter .num b { font-weight: 800; }
+/* People: plain slate initials */
+.whoname { font-weight: 700; }
+.whoname .av { background: #1E293B; font-weight: 700; }
+.whoname.add { background: #F8FAFC; }
+.whoname.add .av { background: #CBD5E1; }
+.whohead { color: #0F172A; font-weight: 700; }
+.whoconnect { background: #FFFBEB; color: #92400E; border: 1px solid #FDE68A; border-radius: 6px; }
+/* Pop-ups */
+#sheet, #buildSheet, #pinPad { background: rgba(15,23,42,.5) !important; }
+#sheet .box, #buildSheet .box, #pinPad .box { border-radius: 8px !important; }
+.ptile .cb { border-radius: 4px; } .ptile .pic { border-radius: 6px; }
+.spotres { border-radius: 6px; }
+
+/* Home tiles: one solid colour per job, quick to find */
+.big { color: #fff !important; border: 0 !important; box-shadow: none !important; font-weight: 800; }
+.big small { color: rgba(255,255,255,.88) !important; font-weight: 500; }
+.big.log    { background: #4C3F91 !important; }
+.big.stockx { background: #1E5A8A !important; }
+.big.stockl { background: #0E7C86 !important; }
+.big.order  { background: #4D8B1F !important; }
+.big.damage { background: #B42318 !important; }
+.big.prod   { background: #C2620A !important; }
+.big .soon { background: rgba(255,255,255,.2); color: #fff; }
+/* Big action buttons stay bold */
+.print { background: #4D8B1F !important; font-weight: 800; }
+.keypad button.next, .ghost.cam, .chip.primary { background: #0E7C86; border-color: #0E7C86; }
+.keypad button.del, .kbd button.del, .pinkeys button.del { background: #FDECEC; border-color: #FDECEC; }
+.whoname .av { background: #0E7C86; }
+
 </style>
 </head>
 <body>

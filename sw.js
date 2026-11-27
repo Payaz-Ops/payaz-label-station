@@ -1,11 +1,11 @@
 // Keeps the Label Station working without internet once it has been opened.
 // Bump VERSION when you upload a new copy so tablets pick up the change.
-const VERSION = "payaz-labels-v9";
+const VERSION = "payaz-labels-v10";
 const FILES = [
   "./", "index.html", "manifest.webmanifest",
   "js/app.js", "js/labels.js", "js/printer.js", "js/log.js", "js/qrcode.js", "js/stock.js", "js/firebase.js", "js/lzma.js",
   "fonts/Montserrat-Regular.ttf", "fonts/Montserrat-Medium.ttf", "fonts/Montserrat-Bold.ttf",
-  "fonts/Montserrat-Black.ttf", "fonts/AtkinsonHyperlegible-Bold.ttf",
+  "fonts/Montserrat-Black.ttf", "fonts/AtkinsonHyperlegible-Bold.ttf", "fonts/Inter-latin.woff2",
   "img/logo-white.png", "img/icon-192.png", "img/icon-512.png",
 ];
 self.addEventListener("install", (e) => {
