@@ -641,6 +641,51 @@ export const stock = {
     return result;
   },
 
+  /**
+   * Managers: an order was cancelled after its label was printed. A unit sent on that
+   * order goes back into stock (+1, with a history entry), ready for another order.
+   * Returns { kind: "returned" | "not_on_order" | "unknown", unit, newQty }.
+   */
+  async cancelDispatch(rawSerial, orderNumber) {
+    init();
+    if (!this.user) throw new Error("Sign in to the stock app first.");
+    const serial = this.normaliseSerial(rawSerial), key = this.serialKey(rawSerial);
+    const order = String(orderNumber || "").trim();
+    const who = { id: this.user.uid, name: this.userName };
+    const unitRef = doc(db, "serial_units", key);
+    let out;
+    await runTransaction(db, async (tx) => {
+      const us = await tx.get(unitRef);
+      if (!us.exists()) { out = { kind: "unknown" }; return; }
+      const u = us.data();
+      if (u.status !== "dispatched" || String(u.order_number || "").trim() !== order) { out = { kind: "not_on_order", unit: u }; return; }
+      const itemRef = u.item_id ? doc(db, "items", u.item_id) : null;
+      const is = itemRef ? await tx.get(itemRef) : null;
+      const now = new Date().toISOString(), note = `Order ${order} cancelled`;
+      tx.update(unitRef, { status: "in_stock", returned_at: now, returned_by_id: who.id, returned_by_name: who.name, note, updated_at: now });
+      let newQty = null;
+      if (is && is.exists()) {
+        const it = { id: is.id, ...is.data() };
+        const old = Number(it.quantity_on_hand) || 0; newQty = old + 1;
+        // last_serial_key: the rules check this serial changed in the same save
+        tx.update(itemRef, { quantity_on_hand: newQty, last_serial_key: key, updated_at: now });
+        const movId = rid("mov");
+        tx.set(doc(db, "movements", movId), {
+          id: movId, timestamp: now, item_id: it.id, item_name: it.name, item_sku: it.SKU || "",
+          serial_number: serial, direction: "in", quantity_delta: 1, location_from: "External", location_to: it.location || "",
+          user_id: who.id, user_name: who.name,
+          reason: `[Serial returned to stock] ${serial}: ${note} (Old: ${old} \u2192 New: ${newQty})`, source: "scan",
+        });
+        const i = this.items.findIndex((x) => x.id === it.id);
+        if (i >= 0) this.items[i] = { ...this.items[i], quantity_on_hand: newQty, updated_at: now };
+      }
+      const eid = "sev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      tx.set(doc(db, "serial_events", eid), { id: eid, serial_key: key, serial_number: serial, type: "returned", item_id: u.item_id || "", item_name: u.item_name || "", order_number: order, note, user_id: who.id, user_name: who.name, app: "Label Station", timestamp: now });
+      out = { kind: "returned", unit: u, newQty };
+    });
+    return out;
+  },
+
   /* ---------- Off site (same records as Payaz Stock's Off site page, src/lib/offsite.ts) ---------- */
 
   /** Move some of a product counted by quantity off site ("off") or bring some back ("on"). */

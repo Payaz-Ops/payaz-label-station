@@ -1,6 +1,6 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
-import { loadLog, addLogEntry, deleteLogEntry, logRow, exportCsv } from "./log.js";
+import { loadLog, addLogEntry, deleteLogEntry, cancelLogEntry, logRow, exportCsv } from "./log.js";
 import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite, OFF_SITE_REASONS, DUE_REASONS, dueText, isOverdue, bringBackItems } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
@@ -558,7 +558,7 @@ async function doPrint(kind, values, n, log = false) {
 // Order labels already printed for an order number (from the Log on this tablet), newest first
 function priorPrints(order) {
   const o = String(order || "").trim().toUpperCase();
-  return o ? loadLog().filter((e) => String(e.order || "").trim().toUpperCase() === o).sort((a, b) => b.ts.localeCompare(a.ts)) : [];
+  return o ? loadLog().filter((e) => !e.cancelled && String(e.order || "").trim().toUpperCase() === o).sort((a, b) => b.ts.localeCompare(a.ts)) : [];
 }
 function whenText(ts) {
   const d = new Date(ts), t = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -634,6 +634,9 @@ function overlay(msg, sub, isErr, noBtn, alt) {
   $("#ovBtn").textContent = alt ? alt.closeLabel || "Cancel" : "OK";
   $("#ovAlt").style.display = alt ? "" : "none";
   if (alt) { $("#ovAlt").textContent = alt.label; $("#ovAlt").onclick = () => { hideOverlay(); alt.run(); }; }
+  const second = alt && alt.second;
+  $("#ovAlt2").style.display = second ? "" : "none";
+  if (second) { $("#ovAlt2").textContent = second.label; $("#ovAlt2").onclick = () => { hideOverlay(); second.run(); }; }
 }
 function hideOverlay() { $("#overlay").classList.remove("on"); }
 $("#ovBtn").onclick = hideOverlay;
@@ -1621,15 +1624,49 @@ function drawLog() {
   $("#logCount").textContent = q ? `${rows.length} of ${all.length} labels` : `${all.length} label${all.length === 1 ? "" : "s"} printed`;
   $("#logBody").innerHTML = rows.map((e) => {
     const r = logRow(e);
-    return `<tr class="row" data-ts="${esc(e.ts)}"><td>${esc(r.order || "-")}</td><td>${r.date}</td><td>${esc(r.sumup || "-")}</td>` +
-      `<td>${esc(r.tablet || "-")}</td><td class="${r.expired ? "exp" : ""}">${r.warranty}${r.expired ? " (expired)" : ""}</td></tr>`;
+    return `<tr class="row${r.cancelled ? " cancelled" : ""}" data-ts="${esc(e.ts)}"><td>${esc(r.order || "-")}</td><td>${r.date}</td><td>${esc(r.sumup || "-")}</td>` +
+      `<td>${esc(r.tablet || "-")}</td>` + (r.cancelled ? `<td class="exp">Cancelled ${esc(r.cancelled)}</td></tr>` : `<td class="${r.expired ? "exp" : ""}">${r.warranty}${r.expired ? " (expired)" : ""}</td></tr>`);
   }).join("");
   $("#logEmpty").textContent = rows.length ? "" : all.length ? "Nothing matches that search." : "No labels printed yet. Order labels appear here when you print them.";
   $("#logBody").querySelectorAll("tr").forEach((tr) => (tr.onclick = () => {
     const e = all.find((x) => x.ts === tr.dataset.ts), r = logRow(e);
-    overlay(`Order ${r.order || "(none)"}`, `Printed ${r.date} · Reader ${r.sumup || "-"} · Tablet ${r.tablet || "-"} · Warranty until ${r.warranty}`, false, false,
-      { label: "Delete this entry", run: () => { deleteLogEntry(e.ts); drawLog(); } });
+    const del = { label: "Delete this entry", run: () => { deleteLogEntry(e.ts); drawLog(); } };
+    const info = `Printed ${r.date} \u00b7 Reader ${r.sumup || "-"} \u00b7 Tablet ${r.tablet || "-"}`;
+    if (r.cancelled) { overlay(`Order ${r.order || "(none)"} (cancelled)`, `${info}\nCancelled ${r.cancelled}.`, false, false, del); return; }
+    if (!S.isManager) { overlay(`Order ${r.order || "(none)"}`, `${info} \u00b7 Warranty until ${r.warranty}\n\nTo cancel this order and put its units back in stock, ask a manager.`, false, false, del); return; }
+    overlay(`Order ${r.order || "(none)"}`, `${info} \u00b7 Warranty until ${r.warranty}`, false, false,
+      { label: "Cancel order", run: () => confirmCancelOrder(e), second: del });
   }));
+}
+/* ---------- cancel an order after its label was printed (managers) ---------- */
+// Its card reader and tablet go back into stock in Payaz Stock (+1 each, history
+// entry "Order … cancelled"), and the Log entry is marked cancelled.
+function confirmCancelOrder(e) {
+  const units = [["Card reader", e.sumup], ["Tablet", e.tablet]].filter(([, sn]) => sn);
+  overlay(`Cancel order ${e.order}?`, units.length
+    ? `${units.map(([n, sn]) => `${n} ${sn}`).join(" and ")} will go back into stock, ready for another order. The Log keeps this entry, marked cancelled.`
+    : "The Log keeps this entry, marked cancelled. (No units were scanned on it.)", false, false,
+    { label: "Yes, cancel order", closeLabel: "Keep order", run: () => cancelOrder(e) });
+}
+async function cancelOrder(e) {
+  const units = [["Card reader", e.sumup], ["Tablet", e.tablet]].filter(([, sn]) => sn);
+  if (units.length && !navigator.onLine) { overlay("No internet", "Cancelling an order needs the internet to put its units back in Payaz Stock.", true); return; }
+  overlay(`Cancelling order ${e.order}…`, "", false, true);
+  const done = [], problems = [];
+  let failed = false; // something went wrong (e.g. lost connection): leave the Log entry as it is
+  for (const [name, sn] of units) {
+    try {
+      const r = await S.cancelDispatch(sn, e.order);
+      if (r.kind === "returned") done.push(`${r.unit.item_name || name} ${sn} back in stock${r.newQty !== null ? ` (now ${r.newQty})` : ""}`);
+      else if (r.kind === "not_on_order") problems.push(`${name} ${sn} wasn't on this order any more (${serialStatusText(r.unit)}), so it was left as it is.`);
+      else problems.push(`${name} ${sn} isn't in Payaz Stock.`);
+    } catch (err) { failed = true; problems.push(`${name} ${sn} wasn't put back: ${friendlyError(err)}. Try again.`); }
+  }
+  // Anything still waiting to send for this order is no longer needed
+  queueSave(queueLoad().filter((y) => String(y.order) !== String(e.order)));
+  if (!failed) cancelLogEntry(e.ts, S.userName);
+  drawLog();
+  overlay(problems.length ? `Order ${e.order}: check this` : `Order ${e.order} cancelled \u2713`, [...done, ...problems].join("\n") || "Marked cancelled in the Log.", problems.length > 0);
 }
 $("#clearSearch").onclick = () => setSearch("");
 $("#exportBtn").onclick = async () => {

@@ -30,6 +30,13 @@ export function deleteLogEntry(ts) {
   return entries;
 }
 
+/** An order cancelled after its label was printed: the entry stays, marked cancelled. */
+export function cancelLogEntry(ts, by, when = new Date()) {
+  const entries = loadLog().map((e) => (e.ts === ts ? { ...e, cancelled: when.toISOString(), cancelledBy: by } : e));
+  saveLog(entries);
+  return entries;
+}
+
 /** Warranty runs 12 months from the day the label was printed. */
 export function warrantyDate(ts) {
   const d = new Date(ts);
@@ -41,9 +48,10 @@ export function warrantyDate(ts) {
 export const logRow = (e) => ({
   order: e.order, date: formatDate(new Date(e.ts)), sumup: e.sumup, tablet: e.tablet,
   warranty: formatDate(warrantyDate(e.ts)), expired: warrantyDate(e.ts) < new Date(new Date().toDateString()),
+  cancelled: e.cancelled ? `${formatDate(new Date(e.cancelled))}${e.cancelledBy ? ` by ${e.cancelledBy}` : ""}` : "",
 });
 
-const HEADERS = ["Payaz Order Number", "Date", "Card Reader", "Tablet", "Warranty Expires"];
+const HEADERS = ["Payaz Order Number", "Date", "Card Reader", "Tablet", "Warranty Expires", "Cancelled"];
 const cell = (v) => {
   v = String(v ?? "");
   // Quote everything; a leading tab stops spreadsheets turning serials like 0123 into numbers
@@ -55,7 +63,7 @@ export function toCsv(entries = loadLog()) {
   const lines = [HEADERS.map(cell).join(",")];
   for (const e of entries) {
     const r = logRow(e);
-    lines.push([r.order, r.date, r.sumup, r.tablet, r.warranty].map(cell).join(","));
+    lines.push([r.order, r.date, r.sumup, r.tablet, r.cancelled ? "" : r.warranty, r.cancelled].map(cell).join(","));
   }
   return "﻿" + lines.join("\r\n") + "\r\n"; // BOM so Excel reads it as UTF-8
 }

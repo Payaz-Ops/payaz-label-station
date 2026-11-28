@@ -181,6 +181,8 @@ th { position: sticky; top: 0; background: #eef2f6; text-align: left; padding: 1
 td { padding: 12px 14px; border-top: 1px solid var(--line); font-weight: 700; white-space: nowrap; }
 td.exp { color: #b3263a; }
 tr.row:active { background: #e3f6f7; }
+tr.row.cancelled td { color: var(--muted); text-decoration: line-through; }
+tr.row.cancelled td:last-child { text-decoration: none; }
 .empty-log { padding: 40px; text-align: center; color: var(--muted); font-size: 18px; }
 
 /* Stock (linked to the Payaz Stock app) */
@@ -678,7 +680,7 @@ header .icon-btn { background: rgba(255,255,255,.07); border: 1px solid rgba(255
   <button class="ghost" id="ppCancel">Cancel</button>
 </div></div>
 <div id="typer"><div class="sheet"><div class="shown" id="typerShown"></div><div class="kbd" id="typerKbd"></div></div></div>
-<div id="overlay"><div class="box" id="ovBox"><div class="msg" id="ovMsg"></div><div class="sub" id="ovSub"></div><div class="btnrow"><button id="ovAlt" class="alt" style="display:none"></button><button id="ovBtn">OK</button></div></div></div>
+<div id="overlay"><div class="box" id="ovBox"><div class="msg" id="ovMsg"></div><div class="sub" id="ovSub"></div><div class="btnrow"><button id="ovAlt2" class="alt" style="display:none"></button><button id="ovAlt" class="alt" style="display:none"></button><button id="ovBtn">OK</button></div></div></div>
 <div id="camera"><video id="video" playsinline muted></video><div class="frame"></div><div class="msg">Point the camera at the barcode</div><button id="camClose">Cancel</button></div>
 
 <script type="module" src="js/app.js"></script>
