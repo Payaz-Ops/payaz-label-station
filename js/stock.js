@@ -641,6 +641,56 @@ export const stock = {
     return result;
   },
 
+  /* ---------- the shared Log (order_labels in Payaz Stock) ---------- */
+
+  /** This tablet's name in the Log (Settings), or the name it was connected with. */
+  get deviceName() {
+    try { return (JSON.parse(localStorage.getItem("payaz-settings") || "{}").tabletName || "").trim() || (loadDevice() && loadDevice().name) || ""; } catch (e) { return ""; }
+  },
+
+  /** Every Order Label printed on any tablet. */
+  async loadLabels() {
+    init();
+    const snap = await getDocs(collection(db, "order_labels"));
+    return snap.docs.map((d) => d.data());
+  },
+
+  /** Save a printed label (or one from this tablet's old log) in Payaz Stock.
+   *  Returns "saved", or "exists" if it was already there. */
+  async saveLabel(e) {
+    init();
+    if (!this.user) throw err("locked", "Sign in first.");
+    const now = new Date().toISOString();
+    const batch = writeBatch(db);
+    batch.set(doc(db, "order_labels", e.id), {
+      id: e.id, order: e.order || "", sumup: e.sumup || "", tablet: e.tablet || "", printed_at: e.ts,
+      printed_by_id: this.user.uid, printed_by_name: e.imported ? (e.by || "Earlier label (from a tablet's own log)") : e.by || this.userName,
+      device: e.device || this.deviceName, ...(e.imported ? { imported: true } : {}), updated_at: now,
+    });
+    try { await batch.commit(); return "saved"; }
+    catch (x) {
+      // Already saved (from this tablet earlier): changing a saved label isn't allowed
+      if (x && x.code === "permission-denied" && (await getDoc(doc(db, "order_labels", e.id))).exists()) return "exists";
+      throw x;
+    }
+  },
+
+  /** Managers: mark a label cancelled in the shared Log. */
+  async cancelLabel(id) {
+    init();
+    const now = new Date().toISOString(), batch = writeBatch(db);
+    batch.update(doc(db, "order_labels", id), { cancelled_at: now, cancelled_by_id: this.user.uid, cancelled_by_name: this.userName, updated_at: now });
+    await batch.commit();
+  },
+
+  /** Managers: take a label out of the shared Log (e.g. a test print). */
+  async deleteLabel(id) {
+    init();
+    const batch = writeBatch(db);
+    batch.delete(doc(db, "order_labels", id));
+    await batch.commit();
+  },
+
   /**
    * Managers: an order was cancelled after its label was printed. A unit sent on that
    * order goes back into stock (+1, with a history entry), ready for another order.

@@ -1,6 +1,7 @@
 import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
-import { loadLog, addLogEntry, deleteLogEntry, cancelLogEntry, logRow, exportCsv } from "./log.js";
+import { loadLog, addLogEntry, deleteLogEntry, cancelLogEntry, markLogSynced, mergeRemoteLog, logRow, exportCsv } from "./log.js";
+import { APP_VERSION } from "./version.js";
 import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite, OFF_SITE_REASONS, DUE_REASONS, dueText, isOverdue, bringBackItems } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
@@ -77,6 +78,7 @@ function show(id) {
   $("#whoBtn").style.display = S.person && !locked && id !== "addme" ? "" : "none";
   if (S.person) $("#whoName").textContent = S.person.name.split(" ")[0];
   if (id === "home") drawAlerts(); else $("#alertBtn").style.display = "none";
+  if (typeof update !== "undefined") $("#updateBtn").style.display = id === "home" && updateReady() ? "" : "none";
 }
 function home() {
   Object.keys(vals).forEach((k) => (vals[k] = ""));
@@ -118,6 +120,7 @@ function printKind() {
 const canPrint = () => mode === "stock" ? !!(vals.name || vals.code) : ["order", "sumup", "tablet"].some((f) => vals[f]);
 function openMode(m) {
   mode = m; copies = 1; typing = false;
+  if (m === "order") syncLabels().then(() => { if (mode === "order" && $("#edit").classList.contains("on")) render(); }); // "already printed" covers every tablet
   $("#fields").innerHTML = fields().map((f) =>
     `<button class="field" data-f="${f.k}"><div class="lbl">${f.label}</div><div class="val"></div>` +
     (mode === "order" && (f.type === "scan" || f.k === "order") ? `<div class="sstat" data-s="${f.k}"></div>` : "") + `</button>`).join("");
@@ -146,7 +149,7 @@ function makeLabel(kind, values) {
 }
 let prevTimer;
 function render() {
-  document.querySelectorAll(".field").forEach((b) => {
+  $("#fields").querySelectorAll(".field").forEach((b) => {
     const f = fieldOf(b.dataset.f), v = b.querySelector(".val"), val = vals[f.k];
     b.classList.toggle("active", f.k === active);
     v.textContent = val || f.ph;
@@ -545,7 +548,7 @@ async function doPrint(kind, values, n, log = false) {
     if (!printer.connected) await connectFromTap();
     const { bitmap } = makeLabel(kind, values);
     await printer.print(bitmap, { copies: n, density: settings.density, onProgress: (m) => overlay(m, "", false, true) });
-    if (log) addLogEntry(values);
+    if (log) { addLogEntry(values, { by: S.userName, device: S.deviceName }); syncLabels(); }
     overlay("Printed ✓", log ? "Added to the log" : "", false, true);
     return true;
   } catch (err) {
@@ -643,7 +646,7 @@ $("#ovBtn").onclick = hideOverlay;
 
 /* ---------- settings screen ---------- */
 const PRESETS = [[40, 30], [40, 40], [40, 60], [50, 30], [50, 50], [50, 80]];
-function openSettings() { $("#hdrTitle").textContent = "Settings"; show("settings"); drawSettings(); drawPrinter(); drawPeopleSettings(); }
+function openSettings() { $("#hdrTitle").textContent = "Settings"; show("settings"); drawSettings(); drawPrinter(); drawPeopleSettings(); drawThisTablet(); }
 function drawSettings() {
   $("#wmm").textContent = settings.widthMm + " mm";
   $("#hmm").textContent = settings.heightMm + " mm";
@@ -1613,7 +1616,71 @@ $("#niSave").onclick = async () => {
 
 /* ---------- log screen ---------- */
 let search = "";
-function openLog() { search = ""; $("#hdrTitle").textContent = "Log"; show("log"); drawLog(); poke(); }
+function openLog() { search = ""; $("#hdrTitle").textContent = "Log"; show("log"); drawLog(); poke(); syncLabels().then(() => { if ($("#log").classList.contains("on")) drawLog(); }); }
+/* ---------- updates: a newer version of this app on GitHub ---------- */
+// Checked at start-up and every 3 hours. "Update now" downloads the new app in Chrome;
+// Android then asks to install it (settings, sign-ins and PINs are kept).
+const RELEASES = "https://api.github.com/repos/Payaz-Ops/payaz-label-station/releases/latest";
+const APK_URL = "https://github.com/Payaz-Ops/payaz-label-station/releases/latest/download/payaz-labels.apk";
+let update = { latest: 0, checked: 0, error: "" };
+async function checkUpdate(force = false) {
+  if (!NATIVE || !APP_VERSION) return; // a test or website copy has no version to compare
+  if (!force && Date.now() - update.checked < 3 * 3600000) return;
+  try {
+    const r = await fetch(RELEASES, { headers: { Accept: "application/vnd.github+json" } });
+    if (!r.ok) throw new Error(`GitHub said ${r.status}`);
+    const m = /v?\d+\.\d+\.(\d+)/.exec((await r.json()).tag_name || "");
+    update = { latest: m ? Number(m[1]) : 0, checked: Date.now(), error: "" };
+  } catch (e) { update = { ...update, checked: Date.now(), error: friendlyError(e) }; }
+  drawUpdate();
+}
+const updateReady = () => update.latest > APP_VERSION;
+function drawUpdate() {
+  const b = $("#updateBtn");
+  b.style.display = updateReady() && $("#home").classList.contains("on") ? "" : "none";
+  b.textContent = `\u2b07 Update to 1.0.${update.latest}`;
+  if ($("#settings").classList.contains("on")) drawThisTablet();
+}
+function startUpdate() {
+  overlay(`Update to version 1.0.${update.latest}`,
+    "1. Tap Download: Chrome downloads the new app.\n2. Tap Open (or the download notification), then Install.\n   The first time, Android may ask to allow installs from Chrome: allow it, then tap back.\n3. Open Payaz Labels again. Settings, sign-ins and PINs are kept.", false, false,
+    { label: "Download", closeLabel: "Not now", run: () => { location.href = APK_URL; } });
+}
+$("#updateBtn").onclick = startUpdate;
+setInterval(() => checkUpdate(), 30 * 60000);
+setTimeout(() => checkUpdate(), 5000);
+function drawThisTablet() {
+  $("#tabletName").textContent = S.deviceName || "Not named (tap to name it, e.g. Tablet 1)";
+  $("#appVersion").textContent = APP_VERSION ? `Version 1.0.${APP_VERSION}` : "Test copy (no version number)";
+  $("#updateStatus").textContent = !NATIVE || !APP_VERSION ? "" : updateReady() ? `Version 1.0.${update.latest} is available.` : update.error ? `Couldn't check for updates: ${update.error}` : update.checked ? "This is the latest version." : "Checking for updates…";
+  $("#updateNow").style.display = updateReady() ? "" : "none";
+}
+$("#updateNow").onclick = startUpdate;
+$("#checkUpdate").onclick = async () => { $("#updateStatus").textContent = "Checking…"; await checkUpdate(true); drawThisTablet(); };
+$("#tabletNameBtn").onclick = () => { searchTarget = "tabletname"; drawTyper(); $("#typer").classList.add("on"); };
+
+/* ---------- the shared Log: every tablet's Order Labels, kept in Payaz Stock ---------- */
+// Labels printed here are uploaded straight away (or when the internet is back), and
+// the Log is refreshed from Payaz Stock, so both tablets show the same list.
+let labelsBusy = null;
+function syncLabels() {
+  if (!S.person || !navigator.onLine) return Promise.resolve(false);
+  if (labelsBusy) return labelsBusy;
+  labelsBusy = (async () => {
+    try {
+      const done = [];
+      for (const e of loadLog().filter((x) => !x.synced)) {
+        try { await S.saveLabel(e); done.push(e.id); } catch (x) { if (isNetworkError(x)) break; }
+      }
+      if (done.length) markLogSynced(done);
+      mergeRemoteLog(await S.loadLabels());
+      return true;
+    } catch (x) { return false; } finally { labelsBusy = null; }
+  })();
+  return labelsBusy;
+}
+setInterval(() => syncLabels(), 5 * 60000);
+S.watch(() => syncLabels());
 function setSearch(v) { search = v.slice(0, 40); drawLog(); poke(); }
 function drawLog() {
   const q = search.trim().toLowerCase();
@@ -1624,14 +1691,18 @@ function drawLog() {
   $("#logCount").textContent = q ? `${rows.length} of ${all.length} labels` : `${all.length} label${all.length === 1 ? "" : "s"} printed`;
   $("#logBody").innerHTML = rows.map((e) => {
     const r = logRow(e);
-    return `<tr class="row${r.cancelled ? " cancelled" : ""}" data-ts="${esc(e.ts)}"><td>${esc(r.order || "-")}</td><td>${r.date}</td><td>${esc(r.sumup || "-")}</td>` +
+    return `<tr class="row${r.cancelled ? " cancelled" : ""}" data-id="${esc(e.id)}"><td>${esc(r.order || "-")}</td><td>${r.date}${r.by || r.device ? `<small class="logby">${esc([r.by, r.device].filter(Boolean).join(" \u00b7 "))}${e.synced ? "" : " \u00b7 not uploaded yet"}</small>` : ""}</td><td>${esc(r.sumup || "-")}</td>` +
       `<td>${esc(r.tablet || "-")}</td>` + (r.cancelled ? `<td class="exp">Cancelled ${esc(r.cancelled)}</td></tr>` : `<td class="${r.expired ? "exp" : ""}">${r.warranty}${r.expired ? " (expired)" : ""}</td></tr>`);
   }).join("");
   $("#logEmpty").textContent = rows.length ? "" : all.length ? "Nothing matches that search." : "No labels printed yet. Order labels appear here when you print them.";
   $("#logBody").querySelectorAll("tr").forEach((tr) => (tr.onclick = () => {
-    const e = all.find((x) => x.ts === tr.dataset.ts), r = logRow(e);
-    const del = { label: "Delete this entry", run: () => { deleteLogEntry(e.ts); drawLog(); } };
-    const info = `Printed ${r.date} \u00b7 Reader ${r.sumup || "-"} \u00b7 Tablet ${r.tablet || "-"}`;
+    const e = all.find((x) => x.id === tr.dataset.id), r = logRow(e);
+    // Deleting takes it off every tablet's Log, so managers only (e.g. a test print)
+    const del = S.isManager ? { label: "Delete this entry", run: () => overlay(`Delete order ${r.order || ""} from the Log?`, "It goes from the Log on every tablet. To undo an order and put its units back in stock, use Cancel order instead.", false, false,
+      { label: "Delete", run: async () => {
+        try { if (e.synced) await S.deleteLabel(e.id); deleteLogEntry(e.id); drawLog(); } catch (x) { overlay("Couldn't delete it", friendlyError(x), true); }
+      } }) } : null;
+    const info = `Printed ${r.date}${r.by ? ` by ${r.by}` : ""}${r.device ? ` (${r.device})` : ""} \u00b7 Reader ${r.sumup || "-"} \u00b7 Tablet ${r.tablet || "-"}`;
     if (r.cancelled) { overlay(`Order ${r.order || "(none)"} (cancelled)`, `${info}\nCancelled ${r.cancelled}.`, false, false, del); return; }
     if (!S.isManager) { overlay(`Order ${r.order || "(none)"}`, `${info} \u00b7 Warranty until ${r.warranty}\n\nTo cancel this order and put its units back in stock, ask a manager.`, false, false, del); return; }
     overlay(`Order ${r.order || "(none)"}`, `${info} \u00b7 Warranty until ${r.warranty}`, false, false,
@@ -1650,7 +1721,7 @@ function confirmCancelOrder(e) {
 }
 async function cancelOrder(e) {
   const units = [["Card reader", e.sumup], ["Tablet", e.tablet]].filter(([, sn]) => sn);
-  if (units.length && !navigator.onLine) { overlay("No internet", "Cancelling an order needs the internet to put its units back in Payaz Stock.", true); return; }
+  if (!navigator.onLine) { overlay("No internet", "Cancelling an order needs the internet (it puts the units back in Payaz Stock and updates the Log on every tablet).", true); return; }
   overlay(`Cancelling order ${e.order}…`, "", false, true);
   const done = [], problems = [];
   let failed = false; // something went wrong (e.g. lost connection): leave the Log entry as it is
@@ -1664,7 +1735,12 @@ async function cancelOrder(e) {
   }
   // Anything still waiting to send for this order is no longer needed
   queueSave(queueLoad().filter((y) => String(y.order) !== String(e.order)));
-  if (!failed) cancelLogEntry(e.ts, S.userName);
+  if (!failed) {
+    // The shared Log: mark it cancelled for every tablet
+    try { if (!e.synced) { await S.saveLabel(e); markLogSynced([e.id]); } await S.cancelLabel(e.id); }
+    catch (x) { problems.push(`The Log on other tablets wasn't updated: ${friendlyError(x)}. Try again.`); }
+    cancelLogEntry(e.id, S.userName);
+  }
   drawLog();
   overlay(problems.length ? `Order ${e.order}: check this` : `Order ${e.order} cancelled \u2713`, [...done, ...problems].join("\n") || "Marked cancelled in the Log.", problems.length > 0);
 }
@@ -1676,9 +1752,10 @@ $("#exportBtn").onclick = async () => {
 };
 // Search typing pop-up
 let searchTarget = "log", serialTyped = "";
-const typerValue = () => (searchTarget === "offtaken" ? off.takenBy || "" : searchTarget === "offplace" ? off.place : searchTarget === "offserial" ? serialTyped : searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
+const typerValue = () => (searchTarget === "tabletname" ? settings.tabletName || "" : searchTarget === "offtaken" ? off.takenBy || "" : searchTarget === "offplace" ? off.place : searchTarget === "offserial" ? serialTyped : searchTarget === "dmgnote" ? dmg.note : searchTarget === "dmgserial" ? serialTyped : searchTarget === "spot" ? String(spot.count) : searchTarget === "location" ? locTyped : searchTarget === "bookref" ? bookRef : searchTarget === "serial" ? serialTyped : searchTarget === "count" ? String(takeCount) : searchTarget === "stock" ? stockSearch : search);
 const typerSet = (v) => {
   if (searchTarget === "offplace") { off.place = v.slice(0, 60); drawTake(); return; }
+  if (searchTarget === "tabletname") { saveSettings({ tabletName: v.slice(0, 30) }); drawThisTablet(); return; }
   if (searchTarget === "offtaken") { off.takenBy = v.slice(0, 60); drawTake(); return; }
   if (searchTarget === "serial" || searchTarget === "dmgserial" || searchTarget === "offserial") { serialTyped = v.toUpperCase().slice(0, 40); return; }
   if (searchTarget === "dmgnote") { dmg.note = v.slice(0, 200); drawTake(); return; }

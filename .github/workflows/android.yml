@@ -31,6 +31,8 @@ jobs:
         run: npm ci
 
       - name: Copy the web app into the Android project
+        env:
+          VERSION_CODE: ${{ github.run_number }}
         run: npm run build:web && npx cap sync android
 
       - name: Signing key
