@@ -428,6 +428,65 @@ header .icon-btn { background: rgba(255,255,255,.07); border: 1px solid rgba(255
 .keypad button.del, .kbd button.del, .pinkeys button.del { background: #FDECEC; border-color: #FDECEC; }
 .whoname .av { background: #0E7C86; }
 
+/* ---------- Orders: website orders to pick (and make) ---------- */
+#home.on { grid-template-columns: 1.15fr 1fr 1fr 1fr; }
+#home .big { font-size: 27px; padding: 20px 22px; }
+.big.orders { grid-row: span 2; background: #22385C !important; position: relative; }
+.big.orders .ocounts { display: flex; flex-direction: column; gap: 10px; margin-bottom: auto; }
+.big.orders .ocounts span { background: rgba(255,255,255,.16); border-radius: 10px; padding: 10px 14px; font-size: 21px; font-weight: 700; }
+.big.orders .ocounts b { font-size: 30px; font-weight: 900; margin-right: 8px; }
+#orders.on { display: flex; gap: 14px; min-height: 0; }
+#pick.on { display: flex; gap: 18px; min-height: 0; }
+.o-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+.o-card { background: #fff; border-radius: var(--r); padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+.o-tabs { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.o-tab { background: #fff; border: 3px solid var(--line); border-radius: 99px; padding: 10px 22px; font-size: 20px; font-weight: 800; color: var(--navy); display: flex; gap: 10px; align-items: center; }
+.o-tab b { background: #eef2f6; border-radius: 99px; min-width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; font-size: 17px; padding: 0 8px; }
+.o-tab.on { background: #0F172A; border-color: #0F172A; color: #fff; } .o-tab.on b { background: rgba(255,255,255,.2); }
+.o-hint { flex: 1; text-align: right; font-size: 15px; font-weight: 600; color: var(--muted); }
+.o-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; min-height: 0; padding-bottom: 6px; }
+.o-row { background: #fff; border-radius: var(--r); border: 3px solid transparent; padding: 14px 18px; display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; gap: 4px 18px; align-items: center; text-align: left; box-shadow: 0 1px 4px rgba(0,0,0,.06); width: 100%; }
+.o-row .n { font-size: 30px; font-weight: 900; color: var(--navy); grid-row: span 2; }
+.o-row .c { font-size: 21px; font-weight: 800; color: var(--navy); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.o-row .p { font-size: 16px; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-row .p b { color: var(--ink); font-weight: 700; }
+.o-st { font-size: 15px; font-weight: 800; border-radius: 99px; padding: 8px 14px; white-space: nowrap; justify-self: end; }
+.o-st.go { background: #e3f6f7; color: #00727c; } .o-st.busy { background: #fff3c4; color: #6b4e00; } .o-st.bad { background: #fde7e9; color: #b3263a; } .o-st.ok { background: #e9f5dc; color: #3c6b12; }
+.o-age { font-size: 14px; font-weight: 700; color: var(--muted); justify-self: end; white-space: nowrap; }
+.o-age.old { color: #b3263a; }
+.o-num { font-size: 40px; font-weight: 900; color: var(--navy); line-height: 1; }
+.o-cust { font-size: 22px; font-weight: 800; color: var(--navy); }
+.o-small { font-size: 15px; font-weight: 500; color: var(--muted); }
+.o-prod { font-size: 21px; font-weight: 900; color: var(--navy); margin-top: 6px; }
+.o-opt { font-size: 16px; background: #f4f6f9; border-radius: 10px; padding: 7px 12px; font-weight: 500; margin-top: 5px; }
+.o-opt b { font-weight: 800; color: var(--navy); }
+.o-note { font-size: 15px; font-weight: 700; color: #6b4e00; background: #fff3c4; border-radius: 10px; padding: 8px 12px; margin-top: 8px; }
+.o-prog { display: flex; align-items: center; gap: 14px; font-size: 18px; font-weight: 800; color: var(--navy); }
+.o-bar { flex: 1; height: 14px; background: #e4e9ef; border-radius: 99px; overflow: hidden; } .o-bar i { display: block; height: 100%; background: #4D8B1F; }
+.o-parts { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.o-part { background: #fff; border: 3px solid var(--line); border-radius: var(--r); padding: 6px 14px; display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 12px; align-items: center; text-align: left; width: 100%; }
+.o-part.next { border-color: #0E7C86; box-shadow: 0 0 0 4px rgba(14,124,134,.18); }
+.o-part.got { background: #f3faec; border-color: #c4e3a3; }
+.o-part .ic { width: 52px; height: 52px; border-radius: 10px; background: #eef2f6; display: flex; align-items: center; justify-content: center; font-size: 26px; overflow: hidden; }
+.o-part .ic img { width: 100%; height: 100%; object-fit: cover; }
+.o-part .nm { font-size: 19px; font-weight: 900; color: var(--navy); }
+.o-part .why { font-size: 12px; font-weight: 800; color: #0E7C86; text-transform: uppercase; letter-spacing: .04em; }
+.o-part .how { font-size: 14px; font-weight: 600; color: var(--muted); margin-top: 2px; }
+.o-part .how .short { color: #b3263a; font-weight: 800; }
+.o-loc { background: #0F172A; color: #fff; border-radius: 8px; padding: 1px 8px; font-weight: 800; }
+.o-sn { display: inline-block; background: #e9f5dc; color: #3c6b12; border-radius: 8px; padding: 2px 8px; font-weight: 800; font-size: 14px; margin: 3px 4px 0 0; }
+.o-qty { font-size: 24px; font-weight: 900; color: var(--navy); text-align: right; min-width: 74px; }
+.o-qty small { display: block; font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; }
+.o-part.got .o-qty { color: #3c6b12; }
+.o-msg { border-radius: var(--r); padding: 10px 16px; font-size: 19px; font-weight: 800; }
+.o-msg.ok { background: #e9f5dc; color: #3c6b12; } .o-msg.bad { background: #fde7e9; color: #b3263a; } .o-msg.info { background: #e3f6f7; color: #00727c; }
+.o-msg small { display: block; font-size: 16px; font-weight: 600; margin-top: 3px; }
+.o-btnrow { display: flex; gap: 12px; }
+.o-go { flex: 1; min-height: 68px; font-size: 25px; font-weight: 900; color: #fff; background: #4D8B1F; }
+.o-go:disabled { background: #c9d3dd; }
+.o-ghost { min-height: 68px; padding: 0 24px; font-size: 19px; font-weight: 800; background: #fff; color: var(--navy); border: 3px solid var(--line); }
+.o-empty { color: var(--muted); font-size: 18px; font-weight: 600; padding: 30px; text-align: center; }
+
 </style>
 </head>
 <body>
@@ -466,6 +525,7 @@ header .icon-btn { background: rgba(255,255,255,.07); border: 1px solid rgba(255
 </section>
 
 <section id="home" class="screen">
+  <button class="big orders" id="goOrders"><div class="ocounts"><span><b id="hoPick">–</b>to pick</span><span><b id="hoMake">–</b>to make</span></div>Orders<small>Website orders: pick, make, label</small></button>
   <button class="big log"    id="goLog">Log<small>Every order label printed, with warranty dates</small></button>
   <button class="big stockx" id="goStock">Stock<small>Stock take, add or remove stock by scanning</small></button>
   <button class="big stockl" id="goStockLabel">Stock Label<small>Shelf labels for your stock items</small></button>
@@ -578,6 +638,28 @@ header .icon-btn { background: rgba(255,255,255,.07); border: 1px solid rgba(255
       <div class="seg" id="niPrintAfter"><button data-v="1" class="on">Print label after saving</button></div>
       <button class="print" id="niSave" style="min-height:76px">SAVE TO STOCK</button>
     </div>
+  </div>
+</section>
+
+<section id="orders" class="screen">
+  <div class="o-col" style="flex:1">
+    <div class="o-tabs">
+      <button class="o-tab on" data-otab="to_pick">To pick <b id="oCntPick">0</b></button>
+      <button class="o-tab" data-otab="to_make">To make <b id="oCntMake">0</b></button>
+      <span class="o-hint" id="oHint">Oldest first</span>
+      <button class="chip" id="oRefresh">&#8635; Refresh</button>
+    </div>
+    <div class="o-list" id="oList"></div>
+  </div>
+</section>
+
+<section id="pick" class="screen">
+  <div class="o-col" style="width:36%" id="pkLeft"></div>
+  <div class="o-col" style="flex:1">
+    <div class="o-card o-prog" id="pkProg"></div>
+    <div id="pkMsg"></div>
+    <div class="o-parts" id="pkParts"></div>
+    <div class="o-btnrow"><button class="o-ghost" id="pkPause">Pause, finish later</button><button class="o-go" id="pkDone">Pick</button></div>
   </div>
 </section>
 

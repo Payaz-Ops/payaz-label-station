@@ -648,6 +648,41 @@ export const stock = {
     try { return (JSON.parse(localStorage.getItem("payaz-settings") || "{}").tabletName || "").trim() || (loadDevice() && loadDevice().name) || ""; } catch (e) { return ""; }
   },
 
+  /* ---------- website orders (WooCommerce, copied in by Payaz Stock) ---------- */
+  async ordersApi(path, body = {}) {
+    init();
+    let r;
+    try {
+      r = await fetch(`${SERVER}/api/orders/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${await this.user.getIdToken()}` },
+        body: JSON.stringify(body),
+      });
+    } catch (e) { throw err("offline", "Can't reach Payaz Stock. Check the internet connection."); }
+    let j = {};
+    try { j = await r.json(); } catch (e) {}
+    if (!r.ok) throw Object.assign(err(j.code || `http-${r.status}`, j.error || `Payaz Stock didn't answer properly (${r.status}).`), { serial: j.serial || "" });
+    return j;
+  },
+  /** Paid orders still waiting on the website (every stage). */
+  async webOrders() {
+    init();
+    const snap = await getDocs(query(collection(db, "web_orders"), where("on_website", "==", true)));
+    return snap.docs.map((d) => d.data());
+  },
+  /** Parts lists: { [product_id]: recipe }. */
+  async orderRecipes() {
+    init();
+    const snap = await getDocs(collection(db, "order_recipes"));
+    const m = {};
+    snap.forEach((d) => { const r = d.data(); m[String(r.product_id)] = r; });
+    return m;
+  },
+  /** Ask Payaz Stock to bring in new orders from the website (at most about once a minute). */
+  syncOrders() { return this.ordersApi("sync").catch(() => null); },
+  startPick(orderId, takeOver = false) { return this.ordersApi("start-pick", { orderId, takeOver, device: this.deviceName }); },
+  savePick(orderId, picked, opts = {}) { return this.ordersApi("save-pick", { orderId, picked, device: this.deviceName, ...opts }); },
+
   /** Every Order Label printed on any tablet. */
   async loadLabels() {
     init();

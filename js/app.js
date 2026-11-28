@@ -2,6 +2,7 @@ import { renderLabel, LABEL_FONT } from "./labels.js";
 import { Printer, bluetoothSupported, isNativeApp } from "./printer.js";
 import { loadLog, addLogEntry, deleteLogEntry, cancelLogEntry, markLogSynced, mergeRemoteLog, logRow, exportCsv } from "./log.js";
 import { APP_VERSION } from "./version.js";
+import { planOrder } from "./orders.js";
 import { stock as realStock, friendlyError as realFriendly, DAMAGE_REASONS, offSite, onSite, OFF_SITE_REASONS, DUE_REASONS, dueText, isOverdue, bringBackItems } from "./stock.js";
 // (automated tests can swap in a pretend stock app)
 const S = window.__STOCK_MOCK__ || realStock;
@@ -84,8 +85,10 @@ function home() {
   Object.keys(vals).forEach((k) => (vals[k] = ""));
   copies = 1;
   $("#hdrTitle").textContent = "Label Station";
+  if (pk.order) { const o = pk.order; pk.order = null; S.savePick(o.id, pk.picked, { pause: true }).catch(() => {}); }
   show("home");
   refreshAlerts();
+  refreshOrderCounts();
 }
 /* ---------- alerts on the home screen: stock to bring back on site, and overdue units ---------- */
 let alerts = { bring: [], overdue: [] }, alertsBusy = false;
@@ -444,6 +447,11 @@ document.addEventListener("keydown", (e) => {
   }
   if ($("#stock").classList.contains("on") && $("#stockMain").style.display !== "none" && !$("#sheet").classList.contains("on")) {
     keyInput(e, { onScan: (c) => stockScan(c.trim()), onType: (c) => setStockSearch(stockSearch + c), onDelete: () => setStockSearch(stockSearch.slice(0, -1)) });
+    return;
+  }
+  if ($("#pick").classList.contains("on")) {
+    if ($("#overlay").classList.contains("on")) return;
+    keyInput(e, { onScan: (c) => pickScan(c.trim()), onType: (c) => { if (c.trim().length >= 4) pickScan(c.trim()); }, onDelete: () => {} });
     return;
   }
   if ($("#log").classList.contains("on")) {
@@ -1793,6 +1801,7 @@ $("#backBtn").onclick = async () => {
   if ($("#newitem").classList.contains("on")) return openStock();
   if ($("#stock").classList.contains("on") && pickForTake) { pickForTake = false; return openStock("take"); }
   if ($("#stock").classList.contains("on")) return leaveToHome();
+  if ($("#pick").classList.contains("on")) return pausePick();
   home();
 };
 $("#setBtn").onclick = openSettings;
@@ -1826,6 +1835,240 @@ if (!NATIVE && "serviceWorker" in navigator && location.protocol === "https:") n
 // Load the label font before drawing any label
 const face = new FontFace(LABEL_FONT, "url(fonts/AtkinsonHyperlegible-Bold.ttf)");
 face.load().then((f) => document.fonts.add(f)).catch(() => {}).finally(() => { if (active) render(); });
+
+/* ---------- Orders: paid website orders to pick (then make and label) ----------
+   Payaz Stock copies paid WooCommerce orders in (it only ever reads the website).
+   The parts to pick come from the parts lists set on the website (Website orders >
+   Parts lists). Picking doesn't change stock: it records what was picked (and which
+   serial numbers) and moves the order to "To make". */
+let oData = { orders: [], recipes: {}, loaded: false }, oTab = "to_pick", oBusy = false, oTimer = null;
+let pk = { order: null, rows: [], picked: [], msg: null, saveTimer: null, saving: null, unsaved: false };
+const PICK_STALE = 20 * 60000;
+const ICONS = [[/card reader/i, "\u{1F4B3}"], [/tablet|lenovo|tab /i, "\u{1F4F1}"], [/box/i, "\u{1F4E6}"], [/lead|cable|plug|charg/i, "\u{1F50C}"], [/screw|washer|insert/i, "\u{1F529}"], [/security|lock/i, "\u{1F512}"], [/sim/i, "\u{1F4F6}"], [/tape|glue/i, "\u{1F9F7}"]];
+const partIcon = (it) => {
+  if (it && it.image_url && /^(https?:|data:image\/)/i.test(it.image_url)) return `<img src="${esc(it.image_url)}" alt="" onerror="this.replaceWith(document.createTextNode('\u{1F4E6}'))">`;
+  const text = it ? `${it.category || ""} ${it.name || ""}` : "";
+  return (ICONS.find(([re]) => re.test(text)) || [0, "\u{1F9E9}"])[1];
+};
+const dayMonth = (iso) => (iso ? new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "");
+const daysOld = (iso) => Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 86400000));
+const itemOf = (id) => S.items.find((i) => i.id === id) || null;
+const optionText = (o) => (o.lines || []).map((l) => `<b>${l.qty > 1 ? `${l.qty} × ` : ""}${esc(l.name)}</b>${l.options.length ? " · " + l.options.map((x) => esc(/^(yes|no)\b/i.test(x.value) ? `${x.key}: ${x.value}` : x.value)).join(" · ") : ""}`).join(" + ");
+
+async function refreshOrderCounts() {
+  if (!S.person) return;
+  try {
+    await Promise.race([S.syncOrders(), new Promise((r) => setTimeout(r, 8000))]);
+    const list = await S.webOrders();
+    $("#hoPick").textContent = list.filter((o) => o.stage === "to_pick").length;
+    $("#hoMake").textContent = list.filter((o) => o.stage === "to_make").length;
+  } catch (e) { $("#hoPick").textContent = "–"; $("#hoMake").textContent = "–"; }
+}
+$("#goOrders").onclick = () => openOrders();
+document.querySelectorAll("[data-otab]").forEach((b) => (b.onclick = () => { oTab = b.dataset.otab; drawOrders(); poke(); }));
+$("#oRefresh").onclick = () => loadOrders(true);
+
+function openOrders(tab) {
+  if (tab) oTab = tab;
+  $("#hdrTitle").textContent = "Orders"; show("orders"); poke();
+  drawOrders(); loadOrders(!oData.loaded);
+  clearInterval(oTimer);
+  oTimer = setInterval(() => { if ($("#orders").classList.contains("on")) loadOrders(false); else clearInterval(oTimer); }, 60000);
+}
+async function loadOrders(showLoading) {
+  if (oBusy) return;
+  oBusy = true;
+  if (showLoading) overlay("Loading orders…", "", false, true);
+  try {
+    await Promise.race([S.syncOrders(), new Promise((r) => setTimeout(r, 15000))]);
+    const [orders, recipes] = await Promise.all([S.webOrders(), S.orderRecipes(), S.items.length ? null : S.refresh()]);
+    oData = { orders, recipes, loaded: true };
+    if (showLoading) hideOverlay();
+  } catch (e) {
+    if (showLoading) overlay("Couldn't load the orders", friendlyError(e), true);
+  } finally { oBusy = false; drawOrders(); }
+}
+function pickedQty(o) { return (o.picked || []).reduce((n, x) => n + (x.qty || 0), 0); }
+function orderStatus(o) {
+  const plan = planOrder(o, oData.recipes);
+  if (o.stage === "to_make") return { cls: "ok", text: "All parts picked", plan };
+  if (plan.missing.length) return { cls: "bad", text: `Parts not set: ${plan.missing[0]}`, plan, missing: true };
+  const p = o.picking;
+  if (p && p.uid !== (S.user && S.user.uid) && Date.now() - Date.parse(p.at) < PICK_STALE) return { cls: "busy", text: `${p.name.split(" ")[0]} is picking${p.device ? ` (${p.device})` : ""}`, plan };
+  const short = plan.parts.find((x) => { const it = itemOf(x.item_id); return !it || onSite(it) < x.qty; });
+  const total = plan.parts.reduce((n, x) => n + x.qty, 0), done = pickedQty(o);
+  if (done > 0) return { cls: "busy", text: `Started: ${Math.min(done, total)} of ${total} picked`, plan };
+  if (short) return { cls: "bad", text: `Short: ${(itemOf(short.item_id) || { name: "a deleted item" }).name}`, plan };
+  if (!plan.parts.length) return { cls: "go", text: "Nothing to pick", plan };
+  return { cls: "go", text: "Ready to pick", plan };
+}
+function drawOrders() {
+  const list = oData.orders.filter((o) => o.stage === oTab).sort((a, b) => (a.date_created || "").localeCompare(b.date_created || ""));
+  $("#oCntPick").textContent = oData.orders.filter((o) => o.stage === "to_pick").length;
+  $("#oCntMake").textContent = oData.orders.filter((o) => o.stage === "to_make").length;
+  document.querySelectorAll("[data-otab]").forEach((b) => b.classList.toggle("on", b.dataset.otab === oTab));
+  $("#oHint").textContent = oTab === "to_make" ? "Picked and ready to build" : "Oldest first · new orders appear automatically";
+  if (!oData.loaded) { $("#oList").innerHTML = `<div class="o-empty">Loading…</div>`; return; }
+  $("#oList").innerHTML = list.length ? list.map((o) => {
+    const st = orderStatus(o), age = daysOld(o.date_created);
+    const right = o.stage === "to_make" && o.picked_by ? `Picked by ${esc(o.picked_by.name.split(" ")[0])}, ${dayMonth(o.picked_by.at)}` : `Ordered ${dayMonth(o.date_created)} · ${age} day${age === 1 ? "" : "s"}`;
+    return `<button class="o-row" data-oid="${esc(o.id)}"><div class="n">#${esc(o.number)}</div><div class="c">${esc(o.customer || "(no name)")}</div><span class="o-st ${st.cls}">${esc(st.text)}</span>` +
+      `<div class="p">${optionText(o)}</div><span class="o-age ${age > 14 && o.stage === "to_pick" ? "old" : ""}">${right}</span></button>`;
+  }).join("") : `<div class="o-empty">${oTab === "to_make" ? "Nothing waiting to be made." : "No website orders waiting to be picked."}</div>`;
+  $("#oList").querySelectorAll("[data-oid]").forEach((b) => (b.onclick = () => {
+    const o = oData.orders.find((x) => x.id === b.dataset.oid);
+    if (o && o.stage === "to_make") return overlay(`Order #${o.number} is ready to make`, "Making orders on the tablet comes in the next update. For now, build it as normal and print its Order Label.");
+    openPick(o);
+  }));
+}
+
+/* ---------- picking one order ---------- */
+async function openPick(o, takeOver = false) {
+  if (!o) return;
+  const st = orderStatus(o);
+  if (st.missing) return overlay(`Parts not set for ${st.plan.missing.join(", ")}`, "A manager can set them on the website: Payaz Stock > Website orders > Parts lists.", true);
+  overlay(`Opening #${o.number}…`, "", false, true);
+  let r;
+  try { r = await S.startPick(o.id, takeOver); }
+  catch (e) {
+    if (e.code === "busy") return overlay(friendlyError(e), "Only take over if they've stopped. Their picked items so far are kept.", true, false, { label: "Take over", run: () => openPick(o, true), closeLabel: "Leave it" });
+    if (e.code === "moved" || e.code === "closed") { loadOrders(false); return overlay(friendlyError(e), "", true); }
+    return overlay("Couldn't open the order", friendlyError(e), true);
+  }
+  hideOverlay();
+  pk.order = r.order;
+  pk.rows = planOrder(r.order, oData.recipes).parts.map((x) => ({ ...x, item: itemOf(x.item_id) }));
+  const keys = new Set(pk.rows.map((x) => x.key));
+  pk.picked = (r.order.picked || []).filter((x) => keys.has(x.key));
+  pk.unsaved = false;
+  pk.msg = pk.picked.length ? ["info", `Carrying on: ${pk.picked.length} already picked.`, "Scan the next part."] : ["info", `Put everything in a tray marked ${r.order.number}.`, "Go to the highlighted shelf and scan the part."];
+  $("#hdrTitle").textContent = `Picking #${r.order.number}`; show("pick"); poke();
+  drawPick();
+}
+const rowDone = (row) => pk.picked.filter((x) => x.key === row.key).reduce((n, x) => n + x.qty, 0);
+const rowLeft = (row) => Math.max(0, row.qty - rowDone(row));
+function drawPick() {
+  const o = pk.order;
+  if (!o) return;
+  $("#pkLeft").innerHTML = `<div class="o-card"><div class="o-num">#${esc(o.number)}</div><div class="o-cust" style="margin-top:6px">${esc(o.customer || "")}</div>` +
+    `<div class="o-small">${esc([o.town, o.shipping_method, `ordered ${dayMonth(o.date_created)}`].filter(Boolean).join(" · "))}</div>` +
+    (o.lines || []).map((l) => `<div class="o-prod">${esc(l.name)} × ${l.qty}</div>` + l.options.map((x) => `<div class="o-opt"><b>${esc(x.key)}:</b> ${esc(x.value)}</div>`).join("")).join("") +
+    (o.customer_note ? `<div class="o-note">Note: ${esc(o.customer_note)}</div>` : "") + `</div>`;
+  const total = pk.rows.reduce((n, x) => n + x.qty, 0), done = pk.rows.reduce((n, x) => n + Math.min(x.qty, rowDone(x)), 0);
+  $("#pkProg").innerHTML = `${done} of ${total} picked <div class="o-bar"><i style="width:${total ? (done / total) * 100 : 100}%"></i></div>${pk.unsaved ? `<span style="color:#b3263a;font-size:14px">Not saved yet (no internet?)</span>` : ""}`;
+  $("#pkMsg").innerHTML = pk.msg ? `<div class="o-msg ${pk.msg[0]}">${esc(pk.msg[1])}${pk.msg[2] ? `<small>${esc(pk.msg[2])}</small>` : ""}</div>` : "";
+  const next = pk.rows.findIndex((x) => rowLeft(x) > 0);
+  $("#pkParts").innerHTML = pk.rows.length ? pk.rows.map((row, i) => {
+    const it = row.item, d = rowDone(row), full = d >= row.qty, serial = it && it.tracking_type === "serial";
+    const have = it ? onSite(it) : 0;
+    const serials = pk.picked.filter((x) => x.key === row.key && x.serial).map((x) => `<span class="o-sn">${esc(x.serial)}</span>`).join("");
+    const how = !it ? `<span class="short">This item has been deleted from Payaz Stock. Tell a manager.</span>`
+      : `${it.location ? `Shelf <span class="o-loc">${esc(it.location)}</span> · ` : ""}${serial ? "scan the serial number" : "scan the barcode, or tap ✓"}${!full && have < row.qty ? ` · <span class="short">only ${have} on site</span>` : ""}`;
+    return `<button class="o-part ${full ? "got" : i === next ? "next" : ""}" data-row="${i}"><div class="ic">${partIcon(it)}</div><div style="min-width:0">` +
+      `<div class="why">${esc(row.why)}</div><div class="nm">${esc(it ? it.name : "Deleted item")}</div><div class="how">${how}</div>${serials ? `<div>${serials}</div>` : ""}</div>` +
+      `<div class="o-qty">${Math.min(d, row.qty)} / ${row.qty}<small>${full ? "picked ✓" : "to pick"}</small></div></button>`;
+  }).join("") : `<div class="o-empty">Nothing to pick for this order (its products are set as "Nothing to pick").</div>`;
+  $("#pkParts").querySelectorAll("[data-row]").forEach((b) => (b.onclick = () => tapRow(+b.dataset.row)));
+  const left = total - done;
+  $("#pkDone").disabled = left > 0;
+  $("#pkDone").textContent = left > 0 ? `Pick ${left} more` : "Picked ✓ Send to Make";
+  const nb = $("#pkParts").querySelector(".next");
+  if (nb) nb.scrollIntoView({ block: "nearest" });
+}
+function setPickMsg(kind, text, sub) { pk.msg = [kind, text, sub || ""]; drawPick(); }
+function tapRow(i) {
+  const row = pk.rows[i];
+  if (!row || !row.item) return;
+  poke();
+  if (rowLeft(row) === 0) {
+    return overlay(`Put one ${row.item.name} back?`, "Only if it was picked by mistake.", false, false, { label: "Put one back", closeLabel: "Keep it", run: () => {
+      const idx = pk.picked.map((x) => x.key).lastIndexOf(row.key);
+      if (idx >= 0) { const [x] = pk.picked.splice(idx, 1); setPickMsg("info", `Taken off: ${row.item.name}${x.serial ? ` ${x.serial}` : ""}.`, "Put it back on the shelf."); queuePickSave(); }
+    } });
+  }
+  if (row.item.tracking_type === "serial") {
+    return overlay(`Scan the ${row.item.name}'s serial number`, "Use the barcode scanner on the serial number label (not the box barcode).", false, false,
+      hasCamera ? { label: "\u{1F4F7} Use camera", closeLabel: "OK", run: () => scanWithCamera((c) => pickScan(String(c || "").trim())) } : null);
+  }
+  addPicked(row, "");
+}
+function addPicked(row, serial) {
+  pk.picked.push({ key: row.key, item_id: row.item_id, qty: 1, ...(serial ? { serial } : {}), at: new Date().toISOString() });
+  const nxt = pk.rows.find((x) => rowLeft(x) > 0);
+  setPickMsg("ok", `✓ ${row.item ? row.item.name : "Part"}${serial ? ` ${serial}` : ""} picked.`,
+    nxt ? `Next: ${nxt.item ? nxt.item.name : "deleted item"}${nxt.item && nxt.item.location ? ` from shelf ${nxt.item.location}` : ""}.` : "Everything is picked. Tap Send to Make.");
+  queuePickSave();
+}
+async function pickScan(code) {
+  if (!pk.order || !code) return;
+  poke();
+  let item = S.findByCode(code), serial = "";
+  if (item && item.tracking_type === "serial") return setPickMsg("bad", `That's the ${item.name} box barcode.`, "Scan the serial number on the item itself.");
+  if (!item) {
+    let unit = null;
+    try { unit = await S.lookupSerial(code); } catch (e) { return setPickMsg("bad", "Couldn't check that serial number.", friendlyError(e)); }
+    if (!unit) return setPickMsg("bad", `${code} isn't in Payaz Stock.`, "Scan again, or check it has been booked in.");
+    item = itemOf(unit.item_id) || { id: unit.item_id, name: unit.item_name, category: "" };
+    serial = unit.serial_number || S.normaliseSerial(code);
+    if (pk.picked.some((x) => x.serial === serial)) return setPickMsg("bad", `${serial} is already picked for this order.`);
+    if (unit.status !== "in_stock") return setPickMsg("bad", `${serial} (${item.name}) is recorded as ${String(unit.status).replace("_", " ")}, not in stock.`, "Use a different one, and tell a manager.");
+    if (unit.picked_for_order && unit.picked_for_order !== pk.order.id) return setPickMsg("bad", `${serial} has already been picked for another order.`, "Use a different one.");
+  }
+  const rows = pk.rows.filter((x) => x.item_id === item.id);
+  const row = rows.find((x) => rowLeft(x) > 0);
+  if (!row) {
+    const back = item.location ? ` Put it back on shelf ${item.location}.` : " Put it back.";
+    if (rows.length) return setPickMsg("bad", `You already have every ${item.name} this order needs.`, back.trim());
+    const similar = pk.rows.find((x) => rowLeft(x) > 0 && x.item && item.category && x.item.category === item.category);
+    return setPickMsg("bad", similar ? `✗ That's a ${item.name}, not a ${similar.item.name}.` : `✗ This order doesn't need a ${item.name}.`,
+      (similar ? `This order needs a ${similar.item.name}.` : "") + back);
+  }
+  addPicked(row, serial);
+}
+function queuePickSave() {
+  clearTimeout(pk.saveTimer);
+  pk.saveTimer = setTimeout(() => savePickNow({}).catch(() => {}), 700);
+}
+async function savePickNow(opts, o = pk.order) {
+  clearTimeout(pk.saveTimer);
+  if (!o) return;
+  const run = async () => {
+    try {
+      await S.savePick(o.id, pk.picked, opts);
+      pk.unsaved = false; if (pk.order === o) drawPick();
+    } catch (e) {
+      if (e.code === "serial" && e.serial) {
+        pk.picked = pk.picked.filter((x) => x.serial !== e.serial);
+        setPickMsg("bad", friendlyError(e), "It has been taken off this order. Use a different one.");
+        queuePickSave();
+      } else if (e.code === "offline") { pk.unsaved = true; if (pk.order === o) drawPick(); }
+      throw e;
+    }
+  };
+  pk.saving = (pk.saving || Promise.resolve()).catch(() => {}).then(run);
+  return pk.saving;
+}
+$("#pkDone").onclick = async () => {
+  const o = pk.order;
+  if (!o || $("#pkDone").disabled) return;
+  overlay("Saving…", "", false, true);
+  try {
+    await savePickNow({ finish: true });
+    pk.order = null;
+    overlay(`Order #${o.number} picked ✓`, "It's now on the To make list on both tablets. Take the tray to the make area.");
+    loadOrders(false); openOrders("to_pick");
+  } catch (e) {
+    if (e.code === "serial") return hideOverlay();
+    overlay("Couldn't finish picking", friendlyError(e), true);
+  }
+};
+async function pausePick() {
+  const o = pk.order;
+  pk.order = null;
+  if (o) { overlay("Saving…", "", false, true); try { await savePickNow({ pause: true }, o); hideOverlay(); } catch (e) { if (e.code !== "serial") overlay("Saved on this tablet only", "Couldn't reach Payaz Stock. Picked items will need scanning again if the tablet is restarted.", true); } }
+  loadOrders(false); openOrders();
+}
+$("#pkPause").onclick = () => pausePick();
 
 /* ---------- Production (Payaz Stock's Production Floor tiles) ---------- */
 // The same tiles as the website. Tap one (e.g. Giving Station), choose how many and
